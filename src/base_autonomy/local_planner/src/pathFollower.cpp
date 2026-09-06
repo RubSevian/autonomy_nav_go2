@@ -20,7 +20,7 @@
 
 #include "tf2/transform_datatypes.h"
 #include "tf2_ros/transform_broadcaster.h"
-#include "tf2_geometry_msgs/tf2_geometry_msgs.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/kdtree/kdtree_flann.h>
@@ -76,6 +76,9 @@ double autonomySpeed = 1.0;
 double joyToSpeedDelay = 2.0;
 double goalCloseDis = 1.0;
 bool is_real_robot = false;
+// RL locomotion owns the low-level interface.  Sport Mode must remain off in
+// that configuration, otherwise both controllers command the same robot.
+bool sendSportCommand = false;
 
 float joySpeed = 0;
 float joySpeedRaw = 0;
@@ -246,6 +249,7 @@ int main(int argc, char** argv)
   nh->declare_parameter<double>("joyToSpeedDelay", joyToSpeedDelay);
   nh->declare_parameter<double>("goalCloseDis", goalCloseDis);
   nh->declare_parameter<bool>("is_real_robot", is_real_robot);
+  nh->declare_parameter<bool>("sendSportCommand", sendSportCommand);
 
   nh->get_parameter("sensorOffsetX", sensorOffsetX);
   nh->get_parameter("sensorOffsetY", sensorOffsetY);
@@ -279,6 +283,7 @@ int main(int argc, char** argv)
   nh->get_parameter("joyToSpeedDelay", joyToSpeedDelay);
   nh->get_parameter("goalCloseDis", goalCloseDis);
   nh->get_parameter("is_real_robot", is_real_robot);
+  nh->get_parameter("sendSportCommand", sendSportCommand);
 
   auto subOdom = nh->create_subscription<nav_msgs::msg::Odometry>("/state_estimation", 5, odomHandler);
 
@@ -426,7 +431,7 @@ int main(int argc, char** argv)
 
         pubSkipCount = pubSkipNum;
 
-        if (is_real_robot)
+        if (is_real_robot && sendSportCommand)
         {
           if (cmd_vel.twist.linear.x == 0 && cmd_vel.twist.linear.y == 0 && cmd_vel.twist.angular.z == 0){
           	sport_req.StopMove(req);

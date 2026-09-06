@@ -1,0 +1,62 @@
+<launch>
+
+  <!-- Headless autonomous stack: local planner publishes /cmd_vel and the RL
+       controller is the sole actuator publisher.  Do not launch Sport Mode or
+       joy_node together with this file. -->
+  <arg name="sensorOffsetX" default="0.3"/>
+  <arg name="sensorOffsetY" default="0.0"/>
+  <arg name="cameraOffsetZ" default="0.0"/>
+  <arg name="vehicleX" default="0.0"/>
+  <arg name="vehicleY" default="0.0"/>
+  <arg name="checkTerrainConn" default="true"/>
+  <arg name="maxSpeed" default="0.3"/>
+  <arg name="autostart" default="false"/>
+  <!-- When autostart is true, ros2_rl_go2 first verifies this interface with
+       SDK2.  Set release_sport_mode=true to stop Unitree sport_mode itself. -->
+  <arg name="network_interface" default=""/>
+  <arg name="release_sport_mode" default="false"/>
+  <arg name="robot_name" default="go2"/>
+  <arg name="config_path" default=""/>
+  <arg name="model_path" default=""/>
+
+  <include file="$(find-pkg-share point_lio_unilidar)/launch/mapping_utlidar.launch">
+    <arg name="rviz" value="false"/>
+  </include>
+
+  <include file="$(find-pkg-share local_planner)/launch/local_planner.launch">
+    <arg name="sensorOffsetX" value="$(var sensorOffsetX)"/>
+    <arg name="sensorOffsetY" value="$(var sensorOffsetY)"/>
+    <arg name="cameraOffsetZ" value="$(var cameraOffsetZ)"/>
+    <arg name="goalX" value="$(var vehicleX)"/>
+    <arg name="goalY" value="$(var vehicleY)"/>
+    <arg name="maxSpeed" value="$(var maxSpeed)"/>
+    <arg name="autonomyMode" value="true"/>
+    <arg name="autonomySpeed" value="$(var maxSpeed)"/>
+    <arg name="is_real_robot" value="false"/>
+    <arg name="sendSportCommand" value="false"/>
+  </include>
+
+  <include file="$(find-pkg-share terrain_analysis)/launch/terrain_analysis.launch"/>
+  <include file="$(find-pkg-share terrain_analysis_ext)/launch/terrain_analysis_ext.launch">
+    <arg name="checkTerrainConn" value="$(var checkTerrainConn)"/>
+  </include>
+  <include file="$(find-pkg-share far_planner)/launch/far_planner.launch"/>
+
+  <node pkg="unitree_legged_real" exec="ros2_rl_go2" name="rl_locomotion" output="screen">
+    <param name="cmd_vel_topic" value="/cmd_vel"/>
+    <param name="cmd_vel_timeout_sec" value="0.25"/>
+    <param name="max_linear_x" value="0.3"/>
+    <param name="max_linear_y" value="0.15"/>
+    <param name="max_yaw_rate" value="0.6"/>
+    <param name="autostart" value="$(var autostart)"/>
+    <param name="network_interface" value="$(var network_interface)"/>
+    <param name="release_sport_mode" value="$(var release_sport_mode)"/>
+    <param name="robot_name" value="$(var robot_name)"/>
+    <param name="config_path" value="$(var config_path)"/>
+    <param name="model_path" value="$(var model_path)"/>
+  </node>
+
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubMap" args="0 0 0 0 0 0 /map /camera_init"/>
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubVehicle" args="0 0 0 0 0 0 /aft_mapped /sensor"/>
+
+</launch>
