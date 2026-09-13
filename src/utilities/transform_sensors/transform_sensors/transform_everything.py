@@ -154,8 +154,8 @@ class Repuber(Node):
             self.time_stamp_offset = self.get_clock().now().nanoseconds - Time.from_msg(data.header.stamp).nanoseconds
             self.time_stamp_offset_set = True
                 
-        cloud_arr = pc2.read_points_list(data)
-        if not cloud_arr:
+        points = pc2.read_points(data)
+        if points.size == 0:
             elevated_cloud = pc2.create_cloud(data.header, data.fields, [])
             elevated_cloud.header.frame_id = 'body'
             elevated_cloud.header.stamp = Time(
@@ -163,8 +163,7 @@ class Repuber(Node):
             ).to_msg()
             self.cloud_pub.publish(elevated_cloud)
             return
-        points = np.asarray(cloud_arr)
-        if points.ndim != 2 or points.shape[1] < 3:
+        if points.dtype.names is None or not {'x', 'y', 'z'}.issubset(points.dtype.names):
             self.get_logger().error('Dropping cloud with no x/y/z point fields')
             return
 
@@ -175,23 +174,30 @@ class Repuber(Node):
         ]))
         translation = np.array([transform.translation.x, transform.translation.y, transform.translation.z])
         
+        # Keep the structured PointCloud2 dtype intact: LiDAR ring/time fields
+        # must not be coerced to a common float array by NumPy.
         transformed_points = points.copy()
-        transformed_points[:, 0:3] = points[:, 0:3] @ mat.T + translation
-        transformed_points[:, 2] -= self.cam_offset
+        xyz = np.column_stack((points['x'], points['y'], points['z']))
+        valid_xyz = np.isfinite(xyz).all(axis=1)
+        xyz = xyz @ mat.T + translation
+        xyz[:, 2] -= self.cam_offset
+        transformed_points['x'] = xyz[:, 0]
+        transformed_points['y'] = xyz[:, 1]
+        transformed_points['z'] = xyz[:, 2]
         in_filter_box = (
-            (transformed_points[:, 0] > self.x_filter_min) &
-            (transformed_points[:, 0] < self.x_filter_max) &
-            (transformed_points[:, 1] > self.y_filter_min) &
-            (transformed_points[:, 1] < self.y_filter_max) &
-            (transformed_points[:, 2] > self.z_filter_min) &
-            (transformed_points[:, 2] < self.z_filter_max)
+            (transformed_points['x'] > self.x_filter_min) &
+            (transformed_points['x'] < self.x_filter_max) &
+            (transformed_points['y'] > self.y_filter_min) &
+            (transformed_points['y'] < self.y_filter_max) &
+            (transformed_points['z'] > self.z_filter_min) &
+            (transformed_points['z'] < self.z_filter_max)
         )
-        transformed_points = transformed_points[~in_filter_box].tolist()
+        transformed_points = transformed_points[valid_xyz & ~in_filter_box]
         
         elevated_cloud = pc2.create_cloud(data.header, data.fields, transformed_points)
         elevated_cloud.header.stamp = Time(nanoseconds=Time.from_msg(elevated_cloud.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
         elevated_cloud.header.frame_id = "body"
-        elevated_cloud.is_dense = data.is_dense
+        elevated_cloud.is_dense = bool(data.is_dense and valid_xyz.all())
 
         self.cloud_pub.publish(elevated_cloud)
             

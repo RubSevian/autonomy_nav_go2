@@ -184,7 +184,7 @@ public:
                                   const std::shared_ptr<tf2_ros::Buffer>& tf_buffer,
                                   const PointCloudPtr& cloudInOut);
 
-    static void TransformPoint3DFrame(const std::string& from_frame_id,
+    static bool TransformPoint3DFrame(const std::string& from_frame_id,
                                       const std::string& to_frame_id,
                                       const std::shared_ptr<tf2_ros::Buffer>& tf_buffer,
                                       Point3D& point);

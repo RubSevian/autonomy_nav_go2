@@ -1,6 +1,6 @@
 <launch>
 
-  <node pkg="terrain_analysis" exec="terrainAnalysis" name="terrainAnalysis" output="screen">
+  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="terrain_analysis" exec="terrainAnalysis" name="terrainAnalysis" output="screen">
     <param name="scanVoxelSize" value="0.05" />
     <param name="decayTime" value="2.0" />
     <param name="noDecayDis" value="0.0" />

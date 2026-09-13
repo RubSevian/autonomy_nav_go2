@@ -22,6 +22,7 @@
   <!-- FAR RViz shows the registered scan, terrain, local path, V-Graph and
        /goal_point.  It is opt-in because it consumes Jetson GPU/RAM. -->
   <arg name="rviz" default="false"/>
+  <arg name="navigation_rviz" default="$(var rviz)"/>
 
   <include file="$(find-pkg-share point_lio_unilidar)/launch/mapping_utlidar.launch">
     <arg name="rviz" value="false"/>
@@ -47,16 +48,14 @@
   <!-- FAR receives /goal_point and publishes a collision-aware /way_point
        consumed by local_planner.  Keep RViz off on the Jetson. -->
   <include file="$(find-pkg-share far_planner)/launch/far_planner.launch.py">
-    <arg name="rviz" value="$(var rviz)"/>
+    <arg name="rviz" value="$(var navigation_rviz)"/>
   </include>
 
-  <node pkg="unitree_legged_real" exec="ros2_rl_go2" name="rl_locomotion" output="screen">
+  <node pkg="unitree_legged_real" exec="ros2_rl_go2" name="rl_locomotion" output="screen" ros_args="--log-level rmw_cyclonedds_cpp:=error">
     <param name="cmd_vel_topic" value="/cmd_vel"/>
     <param name="cmd_vel_timeout_sec" value="0.25"/>
-    <!-- 10 s stand-up plus 0.5 s sensor grace; after that a missing lowstate
-         latches the RL bridge as a real transport fault. -->
+    <!-- Feedback freshness is required throughout stand-up and RL. -->
     <param name="low_state_timeout_sec" value="0.50"/>
-    <param name="low_state_startup_grace_sec" value="10.5"/>
     <param name="max_linear_x" value="0.3"/>
     <param name="max_linear_y" value="0.15"/>
     <param name="max_yaw_rate" value="0.6"/>
@@ -69,7 +68,7 @@
     <param name="model_path" value="$(var model_path)"/>
   </node>
 
-  <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubMap" args="0 0 0 0 0 0 /map /camera_init"/>
-  <node pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubVehicle" args="0 0 0 0 0 0 /aft_mapped /sensor"/>
+  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubMap" args="0 0 0 0 0 0 /map /camera_init"/>
+  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="loamInterfaceTransPubVehicle" args="0 0 0 0 0 0 /aft_mapped /sensor"/>
 
 </launch>

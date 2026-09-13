@@ -356,8 +356,16 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
     }
     while (lidar_buffer.size() > kMaxLidarBufferSize)
     {
-        lidar_buffer.pop_front();
-        time_buffer.pop_front();
+        // sync_packages() may already have borrowed front() and be waiting
+        // for IMU coverage.  Never remove that selected scan; otherwise its
+        // cloud and timestamp no longer refer to the item popped on sync.
+        if (lidar_pushed && lidar_buffer.size() > 1) {
+            lidar_buffer.erase(lidar_buffer.begin() + 1);
+            time_buffer.erase(time_buffer.begin() + 1);
+        } else {
+            lidar_buffer.pop_front();
+            time_buffer.pop_front();
+        }
         ++dropped_lidar_scans;
     }
     if (dropped_lidar_scans > 0 && dropped_lidar_scans % 100 == 0)

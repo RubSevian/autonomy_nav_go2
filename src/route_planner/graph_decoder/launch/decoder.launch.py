@@ -25,6 +25,7 @@ def generate_launch_description():
             package='graph_decoder',
             executable='graph_decoder',
             name='graph_decoder',
+            ros_arguments=['--log-level', 'rmw_cyclonedds_cpp:=error'],
             output='screen',
             parameters=[
                 config

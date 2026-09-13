@@ -7,6 +7,7 @@
 
 
 #include "far_planner/far_planner.h"
+#include <cmath>
 
 /***************************************************************************************/
 FARMaster::FARMaster()
@@ -41,6 +42,9 @@ void FARMaster::Init() {
 
   // planning status publisher
   reach_goal_pub_     = nh_->create_publisher<std_msgs::msg::Bool>("/far_reach_goal_status", 5);
+  navigation_active_pub_ = nh_->create_publisher<std_msgs::msg::Bool>(
+      "/navigation_active", rclcpp::QoS(1).transient_local());
+  PublishNavigationActive(false);
 
   // Terminal formatting subscriber
   read_command_sub_   = nh_->create_subscription<std_msgs::msg::String>("/read_file_dir", 1, std::bind(&FARMaster::ReadFileCommand, this, std::placeholders::_1));
@@ -307,6 +311,9 @@ void FARMaster::PlanningCallBack() {
     traverse_time_pub_->publish(traverse_timer);
     if (is_reach_goal) {
       FARUtil::Timer.end_time("Overall_executing", false);
+      PublishNavigationActive(false);
+    } else if (is_planning_fails) {
+      PublishNavigationActive(false);
     }
 
     plan_timer_.data = FARUtil::Timer.end_time("Path Search", false);
@@ -766,20 +773,36 @@ void FARMaster::ExtractDynamicObsFromScan(const PointCloudPtr scanCloudIn,
 }
 
 void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
+  if (!std::isfinite(route_goal.point.x) || !std::isfinite(route_goal.point.y) ||
+      !std::isfinite(route_goal.point.z) || route_goal.header.frame_id.empty()) {
+    RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal with empty frame or non-finite coordinates");
+    return;
+  }
   Point3D goal_p(route_goal.point.x, route_goal.point.y, route_goal.point.z);
   const std::string goal_frame = route_goal.header.frame_id;
   if (!FARUtil::IsSameFrameID(goal_frame, master_params_.world_frame)) {
-    try {
-      FARUtil::TransformPoint3DFrame(goal_frame, master_params_.world_frame, tf_buffer_, goal_p);
-    } catch (const tf2::TransformException& ex) {
-      RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal: %s", ex.what());
+    if (!FARUtil::TransformPoint3DFrame(goal_frame, master_params_.world_frame, tf_buffer_, goal_p)) {
+      RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal: TF %s -> %s is unavailable",
+                   goal_frame.c_str(), master_params_.world_frame.c_str());
       return;
     }
   }
   graph_planner_.UpdateGoal(goal_p);
+  PublishNavigationActive(true);
   FARUtil::Timer.start_time("Overall_executing", true);
   // visualize original goal
   planner_viz_.VizPoint3D(goal_p, "original_goal", VizColor::RED, 1.5);
+}
+
+void FARMaster::PublishNavigationActive(bool active) {
+  if (navigation_status_published_ && navigation_active_ == active && navigation_active_pub_) return;
+  navigation_active_ = active;
+  if (navigation_active_pub_) {
+    std_msgs::msg::Bool msg;
+    msg.data = active;
+    navigation_active_pub_->publish(msg);
+    navigation_status_published_ = true;
+  }
 }
 
 void FARMaster::WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedPtr route_goal) {

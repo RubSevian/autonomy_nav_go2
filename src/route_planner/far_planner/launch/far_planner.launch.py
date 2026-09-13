@@ -19,6 +19,7 @@ def generate_launch_description():
             package='far_planner',
             executable='far_planner',
             name='far_planner',
+            ros_arguments=['--log-level', 'rmw_cyclonedds_cpp:=error'],
             output='screen',
             parameters=[
                 PythonExpression([
@@ -40,6 +41,7 @@ def generate_launch_description():
             package='rviz2',
             executable='rviz2',
             name='far_rviz',
+            ros_arguments=['--log-level', 'rmw_cyclonedds_cpp:=error'],
             arguments=['-d', 
                 PythonExpression([
                 '"', 

@@ -14,6 +14,7 @@
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/int8.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <sensor_msgs/msg/imu.h>
@@ -113,6 +114,7 @@ double slowInitTime = 0;
 double stopInitTime = false;
 int pathPointID = 0;
 bool pathInit = false;
+bool navigationActive = false;
 bool navFwd = true;
 double switchTime = 0;
 bool odomReceived = false;
@@ -159,6 +161,7 @@ void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
 
 void pathHandler(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
 {
+  if (!navigationActive) return;
   int pathSize = pathIn->poses.size();
   lastPathReceive = std::chrono::steady_clock::now();
   pathReceived = pathSize > 0;
@@ -183,6 +186,18 @@ void pathHandler(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
 
   pathPointID = 0;
   pathInit = true;
+}
+
+void navigationActiveHandler(const std_msgs::msg::Bool::ConstSharedPtr active)
+{
+  navigationActive = active->data;
+  if (!navigationActive) {
+    path.poses.clear();
+    pathInit = false;
+    pathReceived = false;
+    vehicleSpeed = 0.0F;
+    vehicleYawRate = 0.0F;
+  }
 }
 
 void joystickHandler(const sensor_msgs::msg::Joy::ConstSharedPtr joy)
@@ -314,6 +329,9 @@ int main(int argc, char** argv)
 
   auto subPath = nh->create_subscription<nav_msgs::msg::Path>("/path", 5, pathHandler);
 
+  auto subNavigationActive = nh->create_subscription<std_msgs::msg::Bool>(
+      "/navigation_active", rclcpp::QoS(1).transient_local(), navigationActiveHandler);
+
   auto subJoystick = nh->create_subscription<sensor_msgs::msg::Joy>("/joy", 5, joystickHandler);
 
   auto subSpeed = nh->create_subscription<std_msgs::msg::Float32>("/speed", 5, speedHandler);
@@ -346,6 +364,14 @@ int main(int argc, char** argv)
   bool status = rclcpp::ok();
   while (status) {
     rclcpp::spin_some(nh);
+
+    if (!navigationActive) {
+      vehicleSpeed = 0.0F;
+      vehicleYawRate = 0.0F;
+      publishStop();
+      rate.sleep();
+      continue;
+    }
 
     const auto now = std::chrono::steady_clock::now();
     const bool odomFresh = odomReceived &&

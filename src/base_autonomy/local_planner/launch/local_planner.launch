@@ -16,7 +16,7 @@
   <arg name="odomTimeoutSec" default="0.5"/>
   <arg name="pathTimeoutSec" default="0.5"/>
 
-  <node pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
+  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
     <param name="pathFolder" value="$(find-pkg-share local_planner)/paths" />
     <param name="vehicleLength" value="0.3" />
     <param name="vehicleWidth" value="0.7" />
@@ -58,7 +58,7 @@
     <param name="goalY" value="$(var goalY)" />
   </node>
 
-  <node pkg="local_planner" exec="pathFollower" name="pathFollower" output="screen">
+  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="local_planner" exec="pathFollower" name="pathFollower" output="screen">
     <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
     <param name="sensorOffsetY" value="$(var sensorOffsetY)" />
     <param name="pubSkipNum" value="1" />
@@ -96,8 +96,8 @@
     <param name="pathTimeoutSec" value="$(var pathTimeoutSec)"/>
   </node>
 
-  <node pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
+  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
 
-  <node pkg="tf2_ros" exec="static_transform_publisher" name="sensorTransPublisher" args="0 0 $(var cameraOffsetZ) -1.5707963 0 -1.5707963 /sensor /camera"/>
+  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="sensorTransPublisher" args="0 0 $(var cameraOffsetZ) -1.5707963 0 -1.5707963 /sensor /camera"/>
   
 </launch>

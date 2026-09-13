@@ -60,6 +60,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr planning_time_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr traverse_time_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr reach_goal_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr navigation_active_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr dynamic_obs_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr surround_free_debug_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr surround_obs_debug_;
@@ -83,6 +84,10 @@ private:
 
     bool is_cloud_init_, is_scan_init_, is_odom_init_, is_planner_running_;
     bool is_graph_init_;
+    bool navigation_active_ = false;
+    bool navigation_status_published_ = false;
+
+    void PublishNavigationActive(bool active);
 
     PointCloudPtr new_vertices_ptr_;
     PointCloudPtr temp_obs_ptr_;

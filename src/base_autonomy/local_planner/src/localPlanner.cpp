@@ -126,6 +126,9 @@ std::vector<int> correspondences[gridVoxelNum];
 
 bool newLaserCloud = false;
 bool newTerrainCloud = false;
+// FAR owns this state: a /way_point alone must never arm motion because it is
+// an internal, repeatedly published intermediate result.
+bool navigationActive = false;
 
 double odomTime = 0;
 double joyTime = 0;
@@ -247,8 +250,17 @@ void joystickHandler(const sensor_msgs::msg::Joy::ConstSharedPtr joy)
 
 void goalHandler(const geometry_msgs::msg::PointStamped::ConstSharedPtr goal)
 {
+  if (!std::isfinite(goal->point.x) || !std::isfinite(goal->point.y)) {
+    RCLCPP_WARN(nh->get_logger(), "Ignoring non-finite navigation waypoint");
+    return;
+  }
   goalX = goal->point.x;
   goalY = goal->point.y;
+}
+
+void navigationActiveHandler(const std_msgs::msg::Bool::ConstSharedPtr active)
+{
+  navigationActive = active->data;
 }
 
 void speedHandler(const std_msgs::msg::Float32::ConstSharedPtr speed)
@@ -594,6 +606,9 @@ int main(int argc, char** argv)
 
   auto subGoal = nh->create_subscription<geometry_msgs::msg::PointStamped> ("/way_point", 5, goalHandler);
 
+  auto subNavigationActive = nh->create_subscription<std_msgs::msg::Bool>(
+      "/navigation_active", rclcpp::QoS(1).transient_local(), navigationActiveHandler);
+
   auto subSpeed = nh->create_subscription<std_msgs::msg::Float32>("/speed", 5, speedHandler);
 
   auto subBoundary = nh->create_subscription<geometry_msgs::msg::PolygonStamped>("/navigation_boundary", 5, boundaryHandler);
@@ -651,6 +666,14 @@ int main(int argc, char** argv)
   bool status = rclcpp::ok();
   while (status) {
     rclcpp::spin_some(nh);
+
+    // Initial (0,0) launch parameters are configuration defaults, not a goal.
+    // Do not turn point clouds into /path until FAR has accepted /goal_point.
+    if (!navigationActive) {
+      rate.sleep();
+      status = rclcpp::ok();
+      continue;
+    }
 
     if (newLaserCloud || newTerrainCloud) {
       if (newLaserCloud) {
