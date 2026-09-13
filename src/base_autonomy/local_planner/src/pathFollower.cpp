@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <chrono>
+#include <algorithm>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
@@ -362,7 +363,12 @@ int main(int argc, char** argv)
 
   rclcpp::Rate rate(100);
   bool status = rclcpp::ok();
+  auto lastControlTick = std::chrono::steady_clock::now();
   while (status) {
+    const auto controlTick = std::chrono::steady_clock::now();
+    const double controlDt = std::clamp(
+      std::chrono::duration<double>(controlTick - lastControlTick).count(), 0.001, 0.05);
+    lastControlTick = controlTick;
     rclcpp::spin_some(nh);
 
     if (!navigationActive) {
@@ -443,7 +449,8 @@ int main(int argc, char** argv)
         joySpeed2 *= -1;
       }
 
-      if (fabs(vehicleSpeed) < 2.0 * maxAccel / 100.0) vehicleYawRate = -stopYawRateGain * dirDiff;
+      const float maxSpeedStep = static_cast<float>(maxAccel * controlDt);
+      if (fabs(vehicleSpeed) < 2.0F * maxSpeedStep) vehicleYawRate = -stopYawRateGain * dirDiff;
       else vehicleYawRate = -yawRateGain * dirDiff;
 
       if (vehicleYawRate > maxYawRate * PI / 180.0) vehicleYawRate = maxYawRate * PI / 180.0;
@@ -465,13 +472,11 @@ int main(int argc, char** argv)
       if (odomTime < slowInitTime + slowTime1 && slowInitTime > 0) joySpeed3 *= slowRate1;
       else if (odomTime < slowInitTime + slowTime1 + slowTime2 && slowInitTime > 0) joySpeed3 *= slowRate2;
 
-      if ((fabs(dirDiff) < dirDiffThre || (dis < goalCloseDis && fabs(dirDiff) < omniDirDiffThre))  && dis > stopDisThre) {
-        if (vehicleSpeed < joySpeed3) vehicleSpeed += maxAccel / 100.0;
-        else if (vehicleSpeed > joySpeed3) vehicleSpeed -= maxAccel / 100.0;
-      } else {
-        if (vehicleSpeed > 0) vehicleSpeed -= maxAccel / 100.0;
-        else if (vehicleSpeed < 0) vehicleSpeed += maxAccel / 100.0;
-      }
+      const float targetSpeed =
+        ((fabs(dirDiff) < dirDiffThre ||
+          (dis < goalCloseDis && fabs(dirDiff) < omniDirDiffThre)) &&
+         dis > stopDisThre) ? joySpeed3 : 0.0F;
+      vehicleSpeed += std::clamp(targetSpeed - vehicleSpeed, -maxSpeedStep, maxSpeedStep);
 
       if (fabs(vehicleSpeed) > noRotSpeed) vehicleYawRate = 0;
 
@@ -489,7 +494,7 @@ int main(int argc, char** argv)
       pubSkipCount--;
       if (pubSkipCount < 0) {
         cmd_vel.header.stamp = nh->now();
-        if (fabs(vehicleSpeed) <= maxAccel / 100.0) {
+        if (fabs(vehicleSpeed) <= std::max(maxSpeedStep, 1.0e-4F)) {
           cmd_vel.twist.linear.x = 0;
           cmd_vel.twist.linear.y = 0;
         } else {

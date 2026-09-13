@@ -66,7 +66,8 @@
     <param name="lookAheadDis" value="0.5" />
     <param name="yawRateGain" value="1.5" />
     <param name="stopYawRateGain" value="1.5" />
-    <param name="maxYawRate" value="80.0" />
+    <!-- 28 deg/s = 0.489 rad/s, within the RL policy yaw training range. -->
+    <param name="maxYawRate" value="28.0" />
     <param name="maxSpeed" value="$(var maxSpeed)" />
     <param name="maxAccel" value="2.0" />
     <param name="switchTimeThre" value="1.0" />

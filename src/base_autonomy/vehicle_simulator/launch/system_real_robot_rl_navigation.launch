@@ -57,8 +57,9 @@
     <!-- Feedback freshness is required throughout stand-up and RL. -->
     <param name="low_state_timeout_sec" value="0.50"/>
     <param name="max_linear_x" value="0.3"/>
-    <param name="max_linear_y" value="0.15"/>
-    <param name="max_yaw_rate" value="0.6"/>
+    <!-- Physical units; all limits remain inside the policy training range. -->
+    <param name="max_linear_y" value="0.3"/>
+    <param name="max_yaw_rate" value="0.5"/>
     <param name="autostart" value="$(var autostart)"/>
     <param name="network_interface" value="$(var network_interface)"/>
     <param name="release_sport_mode" value="$(var release_sport_mode)"/>
