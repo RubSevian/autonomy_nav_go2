@@ -6,6 +6,7 @@ from sensor_msgs.msg import Imu
 from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import TransformStamped, Vector3
 import sensor_msgs_py.point_cloud2 as pc2
+from rclpy.qos import qos_profile_sensor_data
 import numpy as np
 import yaml
 
@@ -58,8 +59,8 @@ def quaternion_matrix(quaternion):
 class Repuber(Node):
     def __init__(self):
         super().__init__('sensor_transformer')
-        self.imu_sub = self.create_subscription(Imu, '/utlidar/imu', self.imu_callback, 50)
-        self.cloud_sub = self.create_subscription(PointCloud2, '/utlidar/cloud', self.cloud_callback, 50)
+        self.imu_sub = self.create_subscription(Imu, '/utlidar/imu', self.imu_callback, qos_profile_sensor_data)
+        self.cloud_sub = self.create_subscription(PointCloud2, '/utlidar/cloud', self.cloud_callback, qos_profile_sensor_data)
         
         self.imu_raw_pub = self.create_publisher(Imu, '/utlidar/transformed_raw_imu', 50)
         self.imu_pub = self.create_publisher(Imu, '/utlidar/transformed_imu', 50)
@@ -72,8 +73,9 @@ class Repuber(Node):
         
         self.cam_offset = 0.046825
 
-        # Load calibration data
-        calib_data = calib_data = {
+        self.declare_parameter('calibration_path', '')
+        calibration_path = self.get_parameter('calibration_path').value
+        calib_data = {
                 'acc_bias_x': 0.0,
                 'acc_bias_y': 0.0,
                 'acc_bias_z': 0.0,
@@ -83,15 +85,17 @@ class Repuber(Node):
                 'ang_z2x_proj': 0.15,
                 'ang_z2y_proj': -0.28
             }
+        if not calibration_path:
+            calibration_path = os.path.join(os.path.expanduser('~'), 'Desktop/imu_calib_data.yaml')
         try:
-            home_path = os.path.expanduser('~')
-            calib_file_path = os.path.join(home_path, 'Desktop/imu_calib_data.yaml')
-            calib_file = open(calib_file_path, 'r')
-            calib_data = yaml.load(calib_file, Loader=yaml.FullLoader)
-            print("imu_calib.yaml loaded")
-            calib_file.close()
-        except:
-            print("imu_calib.yaml not found, using defualt values")
+            with open(calibration_path, 'r', encoding='utf-8') as calib_file:
+                loaded_calib_data = yaml.safe_load(calib_file) or {}
+            if not isinstance(loaded_calib_data, dict):
+                raise ValueError('calibration YAML must contain a mapping')
+            calib_data.update(loaded_calib_data)
+            self.get_logger().info(f'Loaded IMU calibration: {calibration_path}')
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            self.get_logger().warn(f'Using default IMU calibration: {error}')
             
         self.acc_bias_x = calib_data['acc_bias_x']
         self.acc_bias_y = calib_data['acc_bias_y']
@@ -135,8 +139,6 @@ class Repuber(Node):
         self.z_filter_min = -0.6 - self.cam_offset
         self.z_filter_max = 0 - self.cam_offset
 
-        rclpy.spin(self)
-                
     def is_in_filter_box(self, point):
         # Check if the point is in the filter box
         is_in_box = point[0] > self.x_filter_min and \
@@ -153,7 +155,18 @@ class Repuber(Node):
             self.time_stamp_offset_set = True
                 
         cloud_arr = pc2.read_points_list(data)
-        points = np.array(cloud_arr)
+        if not cloud_arr:
+            elevated_cloud = pc2.create_cloud(data.header, data.fields, [])
+            elevated_cloud.header.frame_id = 'body'
+            elevated_cloud.header.stamp = Time(
+                nanoseconds=Time.from_msg(data.header.stamp).nanoseconds + self.time_stamp_offset
+            ).to_msg()
+            self.cloud_pub.publish(elevated_cloud)
+            return
+        points = np.asarray(cloud_arr)
+        if points.ndim != 2 or points.shape[1] < 3:
+            self.get_logger().error('Dropping cloud with no x/y/z point fields')
+            return
 
         transform = self.body2cloud_trans.transform
         mat = quaternion_matrix(np.array([
@@ -162,21 +175,18 @@ class Repuber(Node):
         ]))
         translation = np.array([transform.translation.x, transform.translation.y, transform.translation.z])
         
-        transformed_points = points
+        transformed_points = points.copy()
         transformed_points[:, 0:3] = points[:, 0:3] @ mat.T + translation
         transformed_points[:, 2] -= self.cam_offset
-        i = 0
-        remove_list = []
-        transformed_points = transformed_points.tolist()
-        for i in range(len(transformed_points)):
-            transformed_points[i][4] = int(transformed_points[i][4])
-            if self.is_in_filter_box(transformed_points[i]):
-                remove_list.append(i)
-
-        remove_list.sort(reverse=True)
-
-        for id_to_remove in remove_list:
-            del transformed_points[id_to_remove]
+        in_filter_box = (
+            (transformed_points[:, 0] > self.x_filter_min) &
+            (transformed_points[:, 0] < self.x_filter_max) &
+            (transformed_points[:, 1] > self.y_filter_min) &
+            (transformed_points[:, 1] < self.y_filter_max) &
+            (transformed_points[:, 2] > self.z_filter_min) &
+            (transformed_points[:, 2] < self.z_filter_max)
+        )
+        transformed_points = transformed_points[~in_filter_box].tolist()
         
         elevated_cloud = pc2.create_cloud(data.header, data.fields, transformed_points)
         elevated_cloud.header.stamp = Time(nanoseconds=Time.from_msg(elevated_cloud.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
@@ -201,6 +211,10 @@ class Repuber(Node):
 
 
     def imu_callback(self, data):    
+        # Both streams use the same offset.  Dropping early IMU packets avoids
+        # mixing two time bases before the first LiDAR stamp establishes it.
+        if not self.time_stamp_offset_set:
+            return
         trans = np.zeros(3)
         trans[0] = self.body2imu_trans.transform.translation.x
         trans[1] = self.body2imu_trans.transform.translation.y
@@ -281,13 +295,12 @@ class Repuber(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-
     transform_node = Repuber()
-
-    rclpy.spin(transform_node)
-
-    Repuber.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(transform_node)
+    finally:
+        transform_node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

@@ -12,7 +12,10 @@
 
         common:
             lid_topic: "/utlidar/transformed_cloud" 
-            imu_topic: "/utlidar/transformed_imu" 
+            # Point-LIO estimates gravity during initialization and therefore
+            # must receive acceleration.  transformed_imu intentionally zeros
+            # it for legacy consumers; use the calibrated raw relay here.
+            imu_topic: "/utlidar/transformed_raw_imu"
             con_frame: false # true: if you need to combine several LiDAR frames into one
             con_frame_num: 1 # the number of frames combined
             cut_frame: false # true: if you need to cut one LiDAR frame into several subframes

@@ -266,6 +266,11 @@ void FARMaster::MainLoopCallBack() {
     is_graph_init_ = true;
     printf("\033[A"), printf("\033[A"), printf("\033[2K");
     std::cout<< "\033[1;32m V-Graph Initialized \033[0m\n" << std::endl;
+    if (has_pending_goal_) {
+      SetGoal(pending_goal_);
+      has_pending_goal_ = false;
+      RCLCPP_INFO(nh_->get_logger(), "FAR Planner accepted the goal queued before graph initialization");
+    }
   }
 
 }
@@ -801,21 +806,31 @@ void FARMaster::ExtractDynamicObsFromScan(const PointCloudPtr scanCloudIn,
   scan_handler_.ExtractDyObsCloud(obsCloudIn, dyObsCloudOut);
 }
 
-void FARMaster::WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedPtr route_goal) {
-  if (!is_graph_init_) {
-    if (FARUtil::IsDebug) RCLCPP_WARN(nh_->get_logger(),"FARMaster: wait for v-graph to init before sending any goals");
-    return;
-  }
-  Point3D goal_p(route_goal->point.x, route_goal->point.y, route_goal->point.z);
-  const std::string goal_frame = route_goal->header.frame_id;
+void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
+  Point3D goal_p(route_goal.point.x, route_goal.point.y, route_goal.point.z);
+  const std::string goal_frame = route_goal.header.frame_id;
   if (!FARUtil::IsSameFrameID(goal_frame, master_params_.world_frame)) {
-    if (FARUtil::IsDebug) RCLCPP_WARN_ONCE(nh_->get_logger(), "FARMaster: waypoint published is not on world frame!");
-    FARUtil::TransformPoint3DFrame(goal_frame, master_params_.world_frame, tf_buffer_, goal_p); 
+    try {
+      FARUtil::TransformPoint3DFrame(goal_frame, master_params_.world_frame, tf_buffer_, goal_p);
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal: %s", ex.what());
+      return;
+    }
   }
   graph_planner_.UpdateGoal(goal_p);
   FARUtil::Timer.start_time("Overall_executing", true);
   // visualize original goal
   planner_viz_.VizPoint3D(goal_p, "original_goal", VizColor::RED, 1.5);
+}
+
+void FARMaster::WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedPtr route_goal) {
+  if (!is_graph_init_) {
+    pending_goal_ = *route_goal;
+    has_pending_goal_ = true;
+    RCLCPP_INFO(nh_->get_logger(), "FAR Planner queued goal until V-Graph is initialized");
+    return;
+  }
+  SetGoal(*route_goal);
 }
 
 /* allocate static utility PointCloud pointer memory */

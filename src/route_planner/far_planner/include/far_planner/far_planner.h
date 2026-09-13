@@ -78,6 +78,8 @@ private:
     bool is_reset_env_, is_stop_update_, is_init_completed_;
 
     geometry_msgs::msg::PointStamped goal_waypoint_stamped_;
+    geometry_msgs::msg::PointStamped pending_goal_;
+    bool has_pending_goal_ = false;
 
     bool is_cloud_init_, is_scan_init_, is_odom_init_, is_planner_running_;
     bool is_graph_init_;
@@ -138,6 +140,8 @@ private:
     void PlanningCallBack();
     
     void ProcessCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc, const PointCloudPtr cloudOut);
+
+    void SetGoal(const geometry_msgs::msg::PointStamped& route_goal);
 
     
     Point3D ExtendViewpointOnObsCloud(const NavNodePtr& nav_node_ptr, const PointCloudPtr& obsCloudIn, float& free_dist);

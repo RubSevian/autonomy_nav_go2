@@ -13,6 +13,8 @@
   <arg name="goalY" default="0.0"/>
   <arg name="is_real_robot" default="true"/>
   <arg name="sendSportCommand" default="false"/>
+  <arg name="odomTimeoutSec" default="0.5"/>
+  <arg name="pathTimeoutSec" default="0.5"/>
 
   <node pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
     <param name="pathFolder" value="$(find-pkg-share local_planner)/paths" />
@@ -90,6 +92,8 @@
     <param name="goalCloseDis" value="$(var goalCloseDis)"/>
     <param name="is_real_robot" value="$(var is_real_robot)"/>
     <param name="sendSportCommand" value="$(var sendSportCommand)"/>
+    <param name="odomTimeoutSec" value="$(var odomTimeoutSec)"/>
+    <param name="pathTimeoutSec" value="$(var pathTimeoutSec)"/>
   </node>
 
   <node pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>

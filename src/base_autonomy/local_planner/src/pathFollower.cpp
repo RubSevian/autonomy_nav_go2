@@ -75,6 +75,8 @@ bool autonomyMode = false;
 double autonomySpeed = 1.0;
 double joyToSpeedDelay = 2.0;
 double goalCloseDis = 1.0;
+double odomTimeoutSec = 0.5;
+double pathTimeoutSec = 0.5;
 bool is_real_robot = false;
 // RL locomotion owns the low-level interface.  Sport Mode must remain off in
 // that configuration, otherwise both controllers command the same robot.
@@ -113,6 +115,10 @@ int pathPointID = 0;
 bool pathInit = false;
 bool navFwd = true;
 double switchTime = 0;
+bool odomReceived = false;
+bool pathReceived = false;
+std::chrono::steady_clock::time_point lastOdomReceive;
+std::chrono::steady_clock::time_point lastPathReceive;
 
 nav_msgs::msg::Path path;
 rclcpp::Node::SharedPtr nh;
@@ -122,6 +128,14 @@ SportClient sport_req;
 
 void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
 {
+  if (!std::isfinite(odomIn->pose.pose.position.x) ||
+      !std::isfinite(odomIn->pose.pose.position.y) ||
+      !std::isfinite(odomIn->pose.pose.position.z)) {
+    RCLCPP_WARN(nh->get_logger(), "Ignoring non-finite odometry");
+    return;
+  }
+  lastOdomReceive = std::chrono::steady_clock::now();
+  odomReceived = true;
   odomTime = rclcpp::Time(odomIn->header.stamp).seconds();
   double roll, pitch, yaw;
   geometry_msgs::msg::Quaternion geoQuat = odomIn->pose.pose.orientation;
@@ -146,6 +160,13 @@ void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
 void pathHandler(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
 {
   int pathSize = pathIn->poses.size();
+  lastPathReceive = std::chrono::steady_clock::now();
+  pathReceived = pathSize > 0;
+  if (!pathReceived) {
+    path.poses.clear();
+    pathInit = false;
+    return;
+  }
   path.poses.resize(pathSize);
   for (int i = 0; i < pathSize; i++) {
     path.poses[i].pose.position.x = pathIn->poses[i].pose.position.x;
@@ -248,6 +269,8 @@ int main(int argc, char** argv)
   nh->declare_parameter<double>("autonomySpeed", autonomySpeed);
   nh->declare_parameter<double>("joyToSpeedDelay", joyToSpeedDelay);
   nh->declare_parameter<double>("goalCloseDis", goalCloseDis);
+  nh->declare_parameter<double>("odomTimeoutSec", odomTimeoutSec);
+  nh->declare_parameter<double>("pathTimeoutSec", pathTimeoutSec);
   nh->declare_parameter<bool>("is_real_robot", is_real_robot);
   nh->declare_parameter<bool>("sendSportCommand", sendSportCommand);
 
@@ -282,6 +305,8 @@ int main(int argc, char** argv)
   nh->get_parameter("autonomySpeed", autonomySpeed);
   nh->get_parameter("joyToSpeedDelay", joyToSpeedDelay);
   nh->get_parameter("goalCloseDis", goalCloseDis);
+  nh->get_parameter("odomTimeoutSec", odomTimeoutSec);
+  nh->get_parameter("pathTimeoutSec", pathTimeoutSec);
   nh->get_parameter("is_real_robot", is_real_robot);
   nh->get_parameter("sendSportCommand", sendSportCommand);
 
@@ -302,6 +327,14 @@ int main(int argc, char** argv)
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header.frame_id = "vehicle";
 
+  const auto publishStop = [&]() {
+    cmd_vel.header.stamp = nh->now();
+    cmd_vel.twist.linear.x = 0.0;
+    cmd_vel.twist.linear.y = 0.0;
+    cmd_vel.twist.angular.z = 0.0;
+    pubSpeed->publish(cmd_vel);
+  };
+
   if (autonomyMode) {
     joySpeed = autonomySpeed / maxSpeed;
 
@@ -313,6 +346,24 @@ int main(int argc, char** argv)
   bool status = rclcpp::ok();
   while (status) {
     rclcpp::spin_some(nh);
+
+    const auto now = std::chrono::steady_clock::now();
+    const bool odomFresh = odomReceived &&
+      std::chrono::duration<double>(now - lastOdomReceive).count() <= odomTimeoutSec;
+    const bool pathFresh = pathReceived &&
+      std::chrono::duration<double>(now - lastPathReceive).count() <= pathTimeoutSec;
+    if (!odomFresh || !pathFresh || !pathInit || path.poses.empty()) {
+      // A route must be produced again after a stale input.  This prevents
+      // resuming an old trajectory when mapping or planning returns.
+      pathInit = false;
+      vehicleSpeed = 0.0;
+      vehicleYawRate = 0.0;
+      publishStop();
+      RCLCPP_WARN_THROTTLE(nh->get_logger(), *nh->get_clock(), 2000,
+        "Navigation stopped: waiting for fresh odometry and path");
+      rate.sleep();
+      continue;
+    }
 
     if (pathInit) {
       float vehicleXRel = cos(vehicleYawRec) * (vehicleX - vehicleXRec) 
@@ -411,7 +462,7 @@ int main(int argc, char** argv)
 
       pubSkipCount--;
       if (pubSkipCount < 0) {
-        cmd_vel.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
+        cmd_vel.header.stamp = nh->now();
         if (fabs(vehicleSpeed) <= maxAccel / 100.0) {
           cmd_vel.twist.linear.x = 0;
           cmd_vel.twist.linear.y = 0;

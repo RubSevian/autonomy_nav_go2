@@ -19,6 +19,9 @@
   <arg name="robot_name" default="go2"/>
   <arg name="config_path" default=""/>
   <arg name="model_path" default=""/>
+  <!-- FAR RViz shows the registered scan, terrain, local path, V-Graph and
+       /goal_point.  It is opt-in because it consumes Jetson GPU/RAM. -->
+  <arg name="rviz" default="false"/>
 
   <include file="$(find-pkg-share point_lio_unilidar)/launch/mapping_utlidar.launch">
     <arg name="rviz" value="false"/>
@@ -44,7 +47,7 @@
   <!-- FAR receives /goal_point and publishes a collision-aware /way_point
        consumed by local_planner.  Keep RViz off on the Jetson. -->
   <include file="$(find-pkg-share far_planner)/launch/far_planner.launch.py">
-    <arg name="rviz" value="false"/>
+    <arg name="rviz" value="$(var rviz)"/>
   </include>
 
   <node pkg="unitree_legged_real" exec="ros2_rl_go2" name="rl_locomotion" output="screen">
