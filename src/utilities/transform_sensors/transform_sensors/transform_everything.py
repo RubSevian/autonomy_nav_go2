@@ -6,15 +6,54 @@ from sensor_msgs.msg import Imu
 from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import TransformStamped, Vector3
 import sensor_msgs_py.point_cloud2 as pc2
-import tf_transformations
-
-from transforms3d.quaternions import quat2mat
-
-from copy import deepcopy
 import numpy as np
 import yaml
 
 import os
+
+
+# Quaternion convention in ROS messages is [x, y, z, w].  Keeping these small
+# helpers local avoids undeclared pip dependencies (tf_transformations and
+# transforms3d) on the Jetson image.
+def quaternion_from_euler(roll, pitch, yaw):
+    cr, sr = np.cos(roll * 0.5), np.sin(roll * 0.5)
+    cp, sp = np.cos(pitch * 0.5), np.sin(pitch * 0.5)
+    cy, sy = np.cos(yaw * 0.5), np.sin(yaw * 0.5)
+    return np.array([
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    ])
+
+
+def quaternion_multiply(first, second):
+    x1, y1, z1, w1 = first
+    x2, y2, z2, w2 = second
+    return np.array([
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    ])
+
+
+def quaternion_conjugate(quaternion):
+    x, y, z, w = quaternion
+    return np.array([-x, -y, -z, w])
+
+
+def quaternion_matrix(quaternion):
+    x, y, z, w = quaternion
+    norm = x * x + y * y + z * z + w * w
+    if norm < np.finfo(float).eps:
+        return np.eye(3)
+    x, y, z, w = np.array([x, y, z, w]) / np.sqrt(norm)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
 
 class Repuber(Node):
     def __init__(self):
@@ -70,7 +109,7 @@ class Repuber(Node):
         self.body2cloud_trans.transform.translation.x = 0.0
         self.body2cloud_trans.transform.translation.y = 0.0
         self.body2cloud_trans.transform.translation.z = 0.0
-        quat = tf_transformations.quaternion_from_euler(0, 2.87820258505555555556, 0)
+        quat = quaternion_from_euler(0, 2.87820258505555555556, 0)
         self.body2cloud_trans.transform.rotation.x = quat[0]
         self.body2cloud_trans.transform.rotation.y = quat[1]
         self.body2cloud_trans.transform.rotation.z = quat[2]
@@ -83,7 +122,7 @@ class Repuber(Node):
         self.body2imu_trans.transform.translation.x = 0.0
         self.body2imu_trans.transform.translation.y = 0.0
         self.body2imu_trans.transform.translation.z = 0.0
-        quat = tf_transformations.quaternion_from_euler(0, 2.87820258505555555556, 3.14159265358)
+        quat = quaternion_from_euler(0, 2.87820258505555555556, 3.14159265358)
         self.body2imu_trans.transform.rotation.x = quat[0]
         self.body2imu_trans.transform.rotation.y = quat[1]
         self.body2imu_trans.transform.rotation.z = quat[2]
@@ -117,7 +156,10 @@ class Repuber(Node):
         points = np.array(cloud_arr)
 
         transform = self.body2cloud_trans.transform
-        mat = quat2mat(np.array([transform.rotation.w, transform.rotation.x, transform.rotation.y, transform.rotation.z]))
+        mat = quaternion_matrix(np.array([
+            transform.rotation.x, transform.rotation.y,
+            transform.rotation.z, transform.rotation.w,
+        ]))
         translation = np.array([transform.translation.x, transform.translation.y, transform.translation.z])
         
         transformed_points = points
@@ -146,9 +188,9 @@ class Repuber(Node):
     def transform_vector(self, vector, rotation):
         # Transform a vector using a given quaternion rotation
         q_vector = [vector.x, vector.y, vector.z, 0.0]
-        q_rotated = tf_transformations.quaternion_multiply(
-            tf_transformations.quaternion_multiply(rotation, q_vector),
-            tf_transformations.quaternion_conjugate(rotation)
+        q_rotated = quaternion_multiply(
+            quaternion_multiply(rotation, q_vector),
+            quaternion_conjugate(rotation)
         )
         
         ret_vec = Vector3()
@@ -170,7 +212,9 @@ class Repuber(Node):
         rot[2] = self.body2imu_trans.transform.rotation.z
         rot[3] = self.body2imu_trans.transform.rotation.w
         
-        transformed_orientation = tf_transformations.quaternion_multiply(rot, [data.orientation.x, data.orientation.y, data.orientation.z, data.orientation.w])
+        transformed_orientation = quaternion_multiply(
+            rot, [data.orientation.x, data.orientation.y, data.orientation.z, data.orientation.w]
+        )
         
         x = data.angular_velocity.x
         y = -data.angular_velocity.y
