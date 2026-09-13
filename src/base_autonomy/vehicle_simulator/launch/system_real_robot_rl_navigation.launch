@@ -41,7 +41,11 @@
   <include file="$(find-pkg-share terrain_analysis_ext)/launch/terrain_analysis_ext.launch">
     <arg name="checkTerrainConn" value="$(var checkTerrainConn)"/>
   </include>
-  <include file="$(find-pkg-share far_planner)/launch/far_planner.launch"/>
+  <!-- FAR receives /goal_point and publishes a collision-aware /way_point
+       consumed by local_planner.  Keep RViz off on the Jetson. -->
+  <include file="$(find-pkg-share far_planner)/launch/far_planner.launch.py">
+    <arg name="rviz" value="false"/>
+  </include>
 
   <node pkg="unitree_legged_real" exec="ros2_rl_go2" name="rl_locomotion" output="screen">
     <param name="cmd_vel_topic" value="/cmd_vel"/>

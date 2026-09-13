@@ -1,3 +1,4 @@
+# Python launch file; the suffix lets ROS 2 select the Python frontend.
 from launch import LaunchDescription
 from launch_ros.actions import Node
 from launch.actions import DeclareLaunchArgument

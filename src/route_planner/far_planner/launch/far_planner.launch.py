@@ -1,6 +1,7 @@
 import yaml
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node, SetParameter
@@ -12,6 +13,7 @@ def generate_launch_description():
     return LaunchDescription([
         SetParameter(name='use_sim_time', value='false'),
         DeclareLaunchArgument('config', default_value='default'),
+        DeclareLaunchArgument('rviz', default_value='false'),
 
         Node(
             package='far_planner',
@@ -47,10 +49,11 @@ def generate_launch_description():
                 '.rviz"'])
             ],
             respawn=False,
+            condition=IfCondition(LaunchConfiguration('rviz')),
         ),
 
         # Including another launch file
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([get_package_share_directory('graph_decoder'), '/launch/decoder.launch'])
+            PythonLaunchDescriptionSource([get_package_share_directory('graph_decoder'), '/launch/decoder.launch.py'])
         )
     ])

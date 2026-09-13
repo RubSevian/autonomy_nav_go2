@@ -1,6 +1,8 @@
 /**:
     ros__parameters:
-        use_sim_time: true
+        # The Go2 publishes wall-clock sensor timestamps; no /clock topic is
+        # present on the physical robot.
+        use_sim_time: false
 
         use_imu_as_input: true
         runtime_pos_log_enable: false
