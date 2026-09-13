@@ -79,6 +79,9 @@ double joyToSpeedDelay = 2.0;
 double goalCloseDis = 1.0;
 double odomTimeoutSec = 0.5;
 double pathTimeoutSec = 0.5;
+// A real planner must continuously refresh its local route.  The MuJoCo
+// smoke-test deliberately sends one static path in the vehicle frame.
+bool allowStaticPath = false;
 bool is_real_robot = false;
 // RL locomotion owns the low-level interface.  Sport Mode must remain off in
 // that configuration, otherwise both controllers command the same robot.
@@ -287,6 +290,7 @@ int main(int argc, char** argv)
   nh->declare_parameter<double>("goalCloseDis", goalCloseDis);
   nh->declare_parameter<double>("odomTimeoutSec", odomTimeoutSec);
   nh->declare_parameter<double>("pathTimeoutSec", pathTimeoutSec);
+  nh->declare_parameter<bool>("allowStaticPath", allowStaticPath);
   nh->declare_parameter<bool>("is_real_robot", is_real_robot);
   nh->declare_parameter<bool>("sendSportCommand", sendSportCommand);
 
@@ -323,6 +327,7 @@ int main(int argc, char** argv)
   nh->get_parameter("goalCloseDis", goalCloseDis);
   nh->get_parameter("odomTimeoutSec", odomTimeoutSec);
   nh->get_parameter("pathTimeoutSec", pathTimeoutSec);
+  nh->get_parameter("allowStaticPath", allowStaticPath);
   nh->get_parameter("is_real_robot", is_real_robot);
   nh->get_parameter("sendSportCommand", sendSportCommand);
 
@@ -382,8 +387,8 @@ int main(int argc, char** argv)
     const auto now = std::chrono::steady_clock::now();
     const bool odomFresh = odomReceived &&
       std::chrono::duration<double>(now - lastOdomReceive).count() <= odomTimeoutSec;
-    const bool pathFresh = pathReceived &&
-      std::chrono::duration<double>(now - lastPathReceive).count() <= pathTimeoutSec;
+    const bool pathFresh = pathReceived && (allowStaticPath ||
+      std::chrono::duration<double>(now - lastPathReceive).count() <= pathTimeoutSec);
     if (!odomFresh || !pathFresh || !pathInit || path.poses.empty()) {
       // A route must be produced again after a stale input.  This prevents
       // resuming an old trajectory when mapping or planning returns.
