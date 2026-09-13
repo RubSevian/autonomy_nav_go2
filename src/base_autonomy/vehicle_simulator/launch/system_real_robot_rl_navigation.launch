@@ -11,10 +11,11 @@
   <arg name="checkTerrainConn" default="true"/>
   <arg name="maxSpeed" default="0.3"/>
   <arg name="autostart" default="false"/>
-  <!-- When autostart is true, ros2_rl_go2 first verifies this interface with
-       SDK2.  Set release_sport_mode=true to stop Unitree sport_mode itself. -->
+  <!-- SDK2 Sport Mode preflight is deliberately a separate process: CycloneDDS
+       cannot be initialised by both SDK2 and ROS inside ros2_rl_go2. -->
   <arg name="network_interface" default=""/>
   <arg name="release_sport_mode" default="false"/>
+  <arg name="low_level_mode_verified" default="false"/>
   <arg name="robot_name" default="go2"/>
   <arg name="config_path" default=""/>
   <arg name="model_path" default=""/>
@@ -51,6 +52,7 @@
     <param name="autostart" value="$(var autostart)"/>
     <param name="network_interface" value="$(var network_interface)"/>
     <param name="release_sport_mode" value="$(var release_sport_mode)"/>
+    <param name="low_level_mode_verified" value="$(var low_level_mode_verified)"/>
     <param name="robot_name" value="$(var robot_name)"/>
     <param name="config_path" value="$(var config_path)"/>
     <param name="model_path" value="$(var model_path)"/>
