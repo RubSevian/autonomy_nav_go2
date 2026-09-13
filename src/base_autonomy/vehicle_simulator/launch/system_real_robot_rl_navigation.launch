@@ -46,6 +46,7 @@
   <node pkg="unitree_legged_real" exec="ros2_rl_go2" name="rl_locomotion" output="screen">
     <param name="cmd_vel_topic" value="/cmd_vel"/>
     <param name="cmd_vel_timeout_sec" value="0.25"/>
+    <param name="low_state_timeout_sec" value="0.20"/>
     <param name="max_linear_x" value="0.3"/>
     <param name="max_linear_y" value="0.15"/>
     <param name="max_yaw_rate" value="0.6"/>
