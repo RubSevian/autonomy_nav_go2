@@ -60,6 +60,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr planning_time_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr traverse_time_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr reach_goal_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr navigation_active_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr dynamic_obs_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr surround_free_debug_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr surround_obs_debug_;
@@ -78,9 +79,15 @@ private:
     bool is_reset_env_, is_stop_update_, is_init_completed_;
 
     geometry_msgs::msg::PointStamped goal_waypoint_stamped_;
+    geometry_msgs::msg::PointStamped pending_goal_;
+    bool has_pending_goal_ = false;
 
     bool is_cloud_init_, is_scan_init_, is_odom_init_, is_planner_running_;
     bool is_graph_init_;
+    bool navigation_active_ = false;
+    bool navigation_status_published_ = false;
+
+    void PublishNavigationActive(bool active);
 
     PointCloudPtr new_vertices_ptr_;
     PointCloudPtr temp_obs_ptr_;
@@ -138,6 +145,8 @@ private:
     void PlanningCallBack();
     
     void ProcessCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc, const PointCloudPtr cloudOut);
+
+    void SetGoal(const geometry_msgs::msg::PointStamped& route_goal);
 
     
     Point3D ExtendViewpointOnObsCloud(const NavNodePtr& nav_node_ptr, const PointCloudPtr& obsCloudIn, float& free_dist);

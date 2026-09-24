@@ -144,7 +144,7 @@ void FARUtil::TransformPCLFrame(const std::string& from_frame_id,
     pcl::fromROSMsg(sensor_cloud, *cloudInOut);
 }
 
-void FARUtil::TransformPoint3DFrame(const std::string& from_frame_id,
+bool FARUtil::TransformPoint3DFrame(const std::string& from_frame_id,
                                     const std::string& to_frame_id,
                                     const std::shared_ptr<tf2_ros::Buffer>& tf_buffer,
                                     Point3D& point) {
@@ -156,20 +156,20 @@ void FARUtil::TransformPoint3DFrame(const std::string& from_frame_id,
     try {
         tf_buffer->transform(pointIn, pointOut, to_frame_id);
     } catch (tf2::TransformException &ex) {
-        std::cout << "FARUtil: Tracking Point3D TF lookup:" << ex.what() << std::endl;
-        return;
+        return false;
     }
 
     point.x = pointOut.point.x;
     point.y = pointOut.point.y;
     point.z = pointOut.point.z;
+    return true;
 }
 
 bool FARUtil::IsSameFrameID(const std::string& cur_frame, const std::string& ref_frame) {
   std::string str1 = cur_frame;
   std::string str2 = ref_frame;
-  if (cur_frame[0] == '/') str1 = cur_frame.substr(1);
-  if (ref_frame[0] == '/') str2 = ref_frame.substr(1);
+  if (!cur_frame.empty() && cur_frame[0] == '/') str1 = cur_frame.substr(1);
+  if (!ref_frame.empty() && ref_frame[0] == '/') str2 = ref_frame.substr(1);
   return str1 == str2;
 }
 
