@@ -48,6 +48,8 @@ int feats_down_size = 0;
 int time_log_counter = 0;
 int scan_count = 0;
 int publish_count = 0;
+size_t dropped_lidar_scans = 0;
+size_t dropped_imu_samples = 0;
 
 int frame_ct = 0;
 double time_update_last = 0.0;
@@ -80,6 +82,8 @@ vector<BoxPointType> cub_needrm;
 deque<PointCloudXYZI::Ptr> lidar_buffer;
 deque<double> time_buffer;
 deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu_deque;
+constexpr size_t kMaxLidarBufferSize = 200;
+constexpr size_t kMaxImuBufferSize = 4000;
 
 PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_body_space(new PointCloudXYZI());
@@ -350,7 +354,23 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
         lidar_buffer.emplace_back(ptr);
         time_buffer.emplace_back(get_time_in_sec(msg->header.stamp));
     }
-    s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
+    while (lidar_buffer.size() > kMaxLidarBufferSize)
+    {
+        // sync_packages() may already have borrowed front() and be waiting
+        // for IMU coverage.  Never remove that selected scan; otherwise its
+        // cloud and timestamp no longer refer to the item popped on sync.
+        if (lidar_pushed && lidar_buffer.size() > 1) {
+            lidar_buffer.erase(lidar_buffer.begin() + 1);
+            time_buffer.erase(time_buffer.begin() + 1);
+        } else {
+            lidar_buffer.pop_front();
+            time_buffer.pop_front();
+        }
+        ++dropped_lidar_scans;
+    }
+    if (dropped_lidar_scans > 0 && dropped_lidar_scans % 100 == 0)
+        RCLCPP_WARN(rclcpp::get_logger("pointlio_mapping"), "Dropped %zu stale LiDAR scans", dropped_lidar_scans);
+    s_plot11[scan_count % MAXN] = omp_get_wtime() - preprocess_start_time;
     mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
@@ -472,6 +492,13 @@ void imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr msg_in)
     }
 
     imu_deque.emplace_back(msg);
+    while (imu_deque.size() > kMaxImuBufferSize)
+    {
+        imu_deque.pop_front();
+        ++dropped_imu_samples;
+    }
+    if (dropped_imu_samples > 0 && dropped_imu_samples % 1000 == 0)
+        RCLCPP_WARN(rclcpp::get_logger("pointlio_mapping"), "Dropped %zu stale IMU samples", dropped_imu_samples);
 
     last_timestamp_imu = timestamp;
 
@@ -980,7 +1007,7 @@ int main(int argc, char **argv)
         {
             if (!p_imu->gravity_align_)
             {
-                while (Measures.lidar_beg_time > get_time_in_sec(imu_next.header.stamp))
+                while (!imu_deque.empty() && Measures.lidar_beg_time > get_time_in_sec(imu_next.header.stamp))
                 {
                     imu_last = imu_next;
                     imu_next = *(imu_deque.front());
@@ -1140,7 +1167,7 @@ int main(int argc, char **argv)
                 {
                     if (imu_en)
                     {
-                        while (time_current > get_time_in_sec(imu_next.header.stamp))
+                        while (!imu_deque.empty() && time_current > get_time_in_sec(imu_next.header.stamp))
                         {
                             imu_last = imu_next;
                             imu_next = *(imu_deque.front());
@@ -1160,7 +1187,7 @@ int main(int argc, char **argv)
                 if (imu_en)
                 {
                     bool imu_comes = time_current > get_time_in_sec(imu_next.header.stamp);
-                    while (imu_comes)
+                    while (imu_comes && !imu_deque.empty())
                     {
                         imu_upda_cov = true;
                         angvel_avr << imu_next.angular_velocity.x, imu_next.angular_velocity.y, imu_next.angular_velocity.z;
@@ -1278,7 +1305,7 @@ int main(int argc, char **argv)
                 time_current = point_body.curvature / 1000.0 + pcl_beg_time;
                 if (is_first_frame)
                 {
-                    while (time_current > get_time_in_sec(imu_next.header.stamp))
+                    while (!imu_deque.empty() && time_current > get_time_in_sec(imu_next.header.stamp))
                     {
                         imu_last = imu_next;
                         imu_next = *(imu_deque.front());
@@ -1303,7 +1330,7 @@ int main(int argc, char **argv)
                     }
                 }
 
-                while (time_current > get_time_in_sec(imu_next.header.stamp))
+                while (!imu_deque.empty() && time_current > get_time_in_sec(imu_next.header.stamp))
                 {
                     imu_last = imu_next;
                     imu_next = *(imu_deque.front());

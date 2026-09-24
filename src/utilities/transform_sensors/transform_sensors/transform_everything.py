@@ -6,21 +6,61 @@ from sensor_msgs.msg import Imu
 from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import TransformStamped, Vector3
 import sensor_msgs_py.point_cloud2 as pc2
-import tf_transformations
-
-from transforms3d.quaternions import quat2mat
-
-from copy import deepcopy
+from rclpy.qos import qos_profile_sensor_data
 import numpy as np
 import yaml
 
 import os
 
+
+# Quaternion convention in ROS messages is [x, y, z, w].  Keeping these small
+# helpers local avoids undeclared pip dependencies (tf_transformations and
+# transforms3d) on the Jetson image.
+def quaternion_from_euler(roll, pitch, yaw):
+    cr, sr = np.cos(roll * 0.5), np.sin(roll * 0.5)
+    cp, sp = np.cos(pitch * 0.5), np.sin(pitch * 0.5)
+    cy, sy = np.cos(yaw * 0.5), np.sin(yaw * 0.5)
+    return np.array([
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+        cr * cp * cy + sr * sp * sy,
+    ])
+
+
+def quaternion_multiply(first, second):
+    x1, y1, z1, w1 = first
+    x2, y2, z2, w2 = second
+    return np.array([
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+    ])
+
+
+def quaternion_conjugate(quaternion):
+    x, y, z, w = quaternion
+    return np.array([-x, -y, -z, w])
+
+
+def quaternion_matrix(quaternion):
+    x, y, z, w = quaternion
+    norm = x * x + y * y + z * z + w * w
+    if norm < np.finfo(float).eps:
+        return np.eye(3)
+    x, y, z, w = np.array([x, y, z, w]) / np.sqrt(norm)
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+
 class Repuber(Node):
     def __init__(self):
         super().__init__('sensor_transformer')
-        self.imu_sub = self.create_subscription(Imu, '/utlidar/imu', self.imu_callback, 50)
-        self.cloud_sub = self.create_subscription(PointCloud2, '/utlidar/cloud', self.cloud_callback, 50)
+        self.imu_sub = self.create_subscription(Imu, '/utlidar/imu', self.imu_callback, qos_profile_sensor_data)
+        self.cloud_sub = self.create_subscription(PointCloud2, '/utlidar/cloud', self.cloud_callback, qos_profile_sensor_data)
         
         self.imu_raw_pub = self.create_publisher(Imu, '/utlidar/transformed_raw_imu', 50)
         self.imu_pub = self.create_publisher(Imu, '/utlidar/transformed_imu', 50)
@@ -33,8 +73,9 @@ class Repuber(Node):
         
         self.cam_offset = 0.046825
 
-        # Load calibration data
-        calib_data = calib_data = {
+        self.declare_parameter('calibration_path', '')
+        calibration_path = self.get_parameter('calibration_path').value
+        calib_data = {
                 'acc_bias_x': 0.0,
                 'acc_bias_y': 0.0,
                 'acc_bias_z': 0.0,
@@ -44,15 +85,17 @@ class Repuber(Node):
                 'ang_z2x_proj': 0.15,
                 'ang_z2y_proj': -0.28
             }
+        if not calibration_path:
+            calibration_path = os.path.join(os.path.expanduser('~'), 'Desktop/imu_calib_data.yaml')
         try:
-            home_path = os.path.expanduser('~')
-            calib_file_path = os.path.join(home_path, 'Desktop/imu_calib_data.yaml')
-            calib_file = open(calib_file_path, 'r')
-            calib_data = yaml.load(calib_file, Loader=yaml.FullLoader)
-            print("imu_calib.yaml loaded")
-            calib_file.close()
-        except:
-            print("imu_calib.yaml not found, using defualt values")
+            with open(calibration_path, 'r', encoding='utf-8') as calib_file:
+                loaded_calib_data = yaml.safe_load(calib_file) or {}
+            if not isinstance(loaded_calib_data, dict):
+                raise ValueError('calibration YAML must contain a mapping')
+            calib_data.update(loaded_calib_data)
+            self.get_logger().info(f'Loaded IMU calibration: {calibration_path}')
+        except (OSError, ValueError, yaml.YAMLError) as error:
+            self.get_logger().warn(f'Using default IMU calibration: {error}')
             
         self.acc_bias_x = calib_data['acc_bias_x']
         self.acc_bias_y = calib_data['acc_bias_y']
@@ -70,7 +113,7 @@ class Repuber(Node):
         self.body2cloud_trans.transform.translation.x = 0.0
         self.body2cloud_trans.transform.translation.y = 0.0
         self.body2cloud_trans.transform.translation.z = 0.0
-        quat = tf_transformations.quaternion_from_euler(0, 2.87820258505555555556, 0)
+        quat = quaternion_from_euler(0, 2.87820258505555555556, 0)
         self.body2cloud_trans.transform.rotation.x = quat[0]
         self.body2cloud_trans.transform.rotation.y = quat[1]
         self.body2cloud_trans.transform.rotation.z = quat[2]
@@ -83,7 +126,7 @@ class Repuber(Node):
         self.body2imu_trans.transform.translation.x = 0.0
         self.body2imu_trans.transform.translation.y = 0.0
         self.body2imu_trans.transform.translation.z = 0.0
-        quat = tf_transformations.quaternion_from_euler(0, 2.87820258505555555556, 3.14159265358)
+        quat = quaternion_from_euler(0, 2.87820258505555555556, 3.14159265358)
         self.body2imu_trans.transform.rotation.x = quat[0]
         self.body2imu_trans.transform.rotation.y = quat[1]
         self.body2imu_trans.transform.rotation.z = quat[2]
@@ -96,8 +139,6 @@ class Repuber(Node):
         self.z_filter_min = -0.6 - self.cam_offset
         self.z_filter_max = 0 - self.cam_offset
 
-        rclpy.spin(self)
-                
     def is_in_filter_box(self, point):
         # Check if the point is in the filter box
         is_in_box = point[0] > self.x_filter_min and \
@@ -113,42 +154,59 @@ class Repuber(Node):
             self.time_stamp_offset = self.get_clock().now().nanoseconds - Time.from_msg(data.header.stamp).nanoseconds
             self.time_stamp_offset_set = True
                 
-        cloud_arr = pc2.read_points_list(data)
-        points = np.array(cloud_arr)
+        points = pc2.read_points(data)
+        if points.size == 0:
+            elevated_cloud = pc2.create_cloud(data.header, data.fields, [])
+            elevated_cloud.header.frame_id = 'body'
+            elevated_cloud.header.stamp = Time(
+                nanoseconds=Time.from_msg(data.header.stamp).nanoseconds + self.time_stamp_offset
+            ).to_msg()
+            self.cloud_pub.publish(elevated_cloud)
+            return
+        if points.dtype.names is None or not {'x', 'y', 'z'}.issubset(points.dtype.names):
+            self.get_logger().error('Dropping cloud with no x/y/z point fields')
+            return
 
         transform = self.body2cloud_trans.transform
-        mat = quat2mat(np.array([transform.rotation.w, transform.rotation.x, transform.rotation.y, transform.rotation.z]))
+        mat = quaternion_matrix(np.array([
+            transform.rotation.x, transform.rotation.y,
+            transform.rotation.z, transform.rotation.w,
+        ]))
         translation = np.array([transform.translation.x, transform.translation.y, transform.translation.z])
         
-        transformed_points = points
-        transformed_points[:, 0:3] = points[:, 0:3] @ mat.T + translation
-        transformed_points[:, 2] -= self.cam_offset
-        i = 0
-        remove_list = []
-        transformed_points = transformed_points.tolist()
-        for i in range(len(transformed_points)):
-            transformed_points[i][4] = int(transformed_points[i][4])
-            if self.is_in_filter_box(transformed_points[i]):
-                remove_list.append(i)
-
-        remove_list.sort(reverse=True)
-
-        for id_to_remove in remove_list:
-            del transformed_points[id_to_remove]
+        # Keep the structured PointCloud2 dtype intact: LiDAR ring/time fields
+        # must not be coerced to a common float array by NumPy.
+        transformed_points = points.copy()
+        xyz = np.column_stack((points['x'], points['y'], points['z']))
+        valid_xyz = np.isfinite(xyz).all(axis=1)
+        xyz = xyz @ mat.T + translation
+        xyz[:, 2] -= self.cam_offset
+        transformed_points['x'] = xyz[:, 0]
+        transformed_points['y'] = xyz[:, 1]
+        transformed_points['z'] = xyz[:, 2]
+        in_filter_box = (
+            (transformed_points['x'] > self.x_filter_min) &
+            (transformed_points['x'] < self.x_filter_max) &
+            (transformed_points['y'] > self.y_filter_min) &
+            (transformed_points['y'] < self.y_filter_max) &
+            (transformed_points['z'] > self.z_filter_min) &
+            (transformed_points['z'] < self.z_filter_max)
+        )
+        transformed_points = transformed_points[valid_xyz & ~in_filter_box]
         
         elevated_cloud = pc2.create_cloud(data.header, data.fields, transformed_points)
         elevated_cloud.header.stamp = Time(nanoseconds=Time.from_msg(elevated_cloud.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
         elevated_cloud.header.frame_id = "body"
-        elevated_cloud.is_dense = data.is_dense
+        elevated_cloud.is_dense = bool(data.is_dense and valid_xyz.all())
 
         self.cloud_pub.publish(elevated_cloud)
             
     def transform_vector(self, vector, rotation):
         # Transform a vector using a given quaternion rotation
         q_vector = [vector.x, vector.y, vector.z, 0.0]
-        q_rotated = tf_transformations.quaternion_multiply(
-            tf_transformations.quaternion_multiply(rotation, q_vector),
-            tf_transformations.quaternion_conjugate(rotation)
+        q_rotated = quaternion_multiply(
+            quaternion_multiply(rotation, q_vector),
+            quaternion_conjugate(rotation)
         )
         
         ret_vec = Vector3()
@@ -159,6 +217,10 @@ class Repuber(Node):
 
 
     def imu_callback(self, data):    
+        # Both streams use the same offset.  Dropping early IMU packets avoids
+        # mixing two time bases before the first LiDAR stamp establishes it.
+        if not self.time_stamp_offset_set:
+            return
         trans = np.zeros(3)
         trans[0] = self.body2imu_trans.transform.translation.x
         trans[1] = self.body2imu_trans.transform.translation.y
@@ -170,7 +232,9 @@ class Repuber(Node):
         rot[2] = self.body2imu_trans.transform.rotation.z
         rot[3] = self.body2imu_trans.transform.rotation.w
         
-        transformed_orientation = tf_transformations.quaternion_multiply(rot, [data.orientation.x, data.orientation.y, data.orientation.z, data.orientation.w])
+        transformed_orientation = quaternion_multiply(
+            rot, [data.orientation.x, data.orientation.y, data.orientation.z, data.orientation.w]
+        )
         
         x = data.angular_velocity.x
         y = -data.angular_velocity.y
@@ -237,13 +301,12 @@ class Repuber(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-
     transform_node = Repuber()
-
-    rclpy.spin(transform_node)
-
-    Repuber.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(transform_node)
+    finally:
+        transform_node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

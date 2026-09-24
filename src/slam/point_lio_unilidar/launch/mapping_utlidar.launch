@@ -1,13 +1,14 @@
 <launch>
 	<!-- Launch file for Unitree L1 LiDAR mounted on Go2 -->
 	<arg name="rviz" default="true" />
+	<arg name="calibrationPath" default="" />
 
-	<node pkg="transform_sensors" exec="transform_everything" name="transform_everything" output="screen" />
+	<node pkg="transform_sensors" exec="transform_everything" name="transform_everything" output="screen">
+		<param name="calibration_path" value="$(var calibrationPath)" />
+	</node>
 
 	<node pkg="point_lio_unilidar" exec="pointlio_mapping" name="laserMapping" output="screen">
 		<param from="$(find-pkg-share point_lio_unilidar)/config/utlidar.yaml" />
-		
-		<param name="use_imu_as_input" value="false"/>
 		
 		<param name="prop_at_freq_of_imu" value="true"/>
 		<param name="check_satu" value="true"/>
