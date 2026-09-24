@@ -12,6 +12,10 @@
   <arg name="goalX" default="0.0"/>
   <arg name="goalY" default="0.0"/>
   <arg name="is_real_robot" default="true"/>
+  <arg name="sendSportCommand" default="false"/>
+  <arg name="odomTimeoutSec" default="0.5"/>
+  <arg name="pathTimeoutSec" default="0.5"/>
+  <arg name="allowStaticPath" default="false"/>
 
   <node pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
     <param name="pathFolder" value="$(find-pkg-share local_planner)/paths" />
@@ -63,7 +67,8 @@
     <param name="lookAheadDis" value="0.5" />
     <param name="yawRateGain" value="1.5" />
     <param name="stopYawRateGain" value="1.5" />
-    <param name="maxYawRate" value="80.0" />
+    <!-- Provisional policy-compatible limit: 28 deg/s = 0.489 rad/s. -->
+    <param name="maxYawRate" value="28.0" />
     <param name="maxSpeed" value="$(var maxSpeed)" />
     <param name="maxAccel" value="2.0" />
     <param name="switchTimeThre" value="1.0" />
@@ -88,6 +93,10 @@
     <param name="joyToSpeedDelay" value="$(var joyToSpeedDelay)" />
     <param name="goalCloseDis" value="$(var goalCloseDis)"/>
     <param name="is_real_robot" value="$(var is_real_robot)"/>
+    <param name="sendSportCommand" value="$(var sendSportCommand)"/>
+    <param name="odomTimeoutSec" value="$(var odomTimeoutSec)"/>
+    <param name="pathTimeoutSec" value="$(var pathTimeoutSec)"/>
+    <param name="allowStaticPath" value="$(var allowStaticPath)"/>
   </node>
 
   <node pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>

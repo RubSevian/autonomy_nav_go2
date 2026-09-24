@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <chrono>
+#include <algorithm>
+#include <cmath>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
@@ -14,6 +16,7 @@
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/int8.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <sensor_msgs/msg/imu.h>
@@ -75,7 +78,15 @@ bool autonomyMode = false;
 double autonomySpeed = 1.0;
 double joyToSpeedDelay = 2.0;
 double goalCloseDis = 1.0;
+double odomTimeoutSec = 0.5;
+double pathTimeoutSec = 0.5;
+// A real planner must continuously refresh its local route.  The MuJoCo
+// smoke-test deliberately sends one static path in the vehicle frame.
+bool allowStaticPath = false;
 bool is_real_robot = false;
+// RL locomotion owns the low-level interface.  Sport Mode must remain off in
+// that configuration, otherwise both controllers command the same robot.
+bool sendSportCommand = false;
 
 float joySpeed = 0;
 float joySpeedRaw = 0;
@@ -108,8 +119,13 @@ double slowInitTime = 0;
 double stopInitTime = false;
 int pathPointID = 0;
 bool pathInit = false;
+bool navigationActive = false;
 bool navFwd = true;
 double switchTime = 0;
+bool odomReceived = false;
+bool pathReceived = false;
+std::chrono::steady_clock::time_point lastOdomReceive;
+std::chrono::steady_clock::time_point lastPathReceive;
 
 nav_msgs::msg::Path path;
 rclcpp::Node::SharedPtr nh;
@@ -119,6 +135,19 @@ SportClient sport_req;
 
 void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
 {
+  const auto& position = odomIn->pose.pose.position;
+  const auto& orientation = odomIn->pose.pose.orientation;
+  const double orientationNorm = orientation.x * orientation.x + orientation.y * orientation.y +
+                                 orientation.z * orientation.z + orientation.w * orientation.w;
+  if (!std::isfinite(position.x) || !std::isfinite(position.y) ||
+      !std::isfinite(position.z) || !std::isfinite(orientation.x) ||
+      !std::isfinite(orientation.y) || !std::isfinite(orientation.z) ||
+      !std::isfinite(orientation.w) || orientationNorm < 1.0e-12) {
+    RCLCPP_WARN(nh->get_logger(), "Ignoring non-finite odometry pose");
+    return;
+  }
+  lastOdomReceive = std::chrono::steady_clock::now();
+  odomReceived = true;
   odomTime = rclcpp::Time(odomIn->header.stamp).seconds();
   double roll, pitch, yaw;
   geometry_msgs::msg::Quaternion geoQuat = odomIn->pose.pose.orientation;
@@ -142,7 +171,37 @@ void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
 
 void pathHandler(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
 {
+  if (!navigationActive) return;
+  if (pathIn->header.frame_id != "vehicle" && pathIn->header.frame_id != "/vehicle") {
+    RCLCPP_WARN(nh->get_logger(), "Rejecting path with unexpected frame '%s'",
+                pathIn->header.frame_id.c_str());
+    path.poses.clear();
+    pathReceived = false;
+    pathInit = false;
+    vehicleSpeed = 0.0F;
+    vehicleYawRate = 0.0F;
+    return;
+  }
   int pathSize = pathIn->poses.size();
+  lastPathReceive = std::chrono::steady_clock::now();
+  pathReceived = pathSize > 0;
+  if (!pathReceived) {
+    path.poses.clear();
+    pathInit = false;
+    return;
+  }
+  for (const auto& pose : pathIn->poses) {
+    if (!std::isfinite(pose.pose.position.x) || !std::isfinite(pose.pose.position.y) ||
+        !std::isfinite(pose.pose.position.z)) {
+      RCLCPP_WARN(nh->get_logger(), "Rejecting path with non-finite position");
+      path.poses.clear();
+      pathReceived = false;
+      pathInit = false;
+      vehicleSpeed = 0.0F;
+      vehicleYawRate = 0.0F;
+      return;
+    }
+  }
   path.poses.resize(pathSize);
   for (int i = 0; i < pathSize; i++) {
     path.poses[i].pose.position.x = pathIn->poses[i].pose.position.x;
@@ -159,6 +218,18 @@ void pathHandler(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
 
   pathPointID = 0;
   pathInit = true;
+}
+
+void navigationActiveHandler(const std_msgs::msg::Bool::ConstSharedPtr active)
+{
+  navigationActive = active->data;
+  if (!navigationActive) {
+    path.poses.clear();
+    pathInit = false;
+    pathReceived = false;
+    vehicleSpeed = 0.0F;
+    vehicleYawRate = 0.0F;
+  }
 }
 
 void joystickHandler(const sensor_msgs::msg::Joy::ConstSharedPtr joy)
@@ -245,7 +316,11 @@ int main(int argc, char** argv)
   nh->declare_parameter<double>("autonomySpeed", autonomySpeed);
   nh->declare_parameter<double>("joyToSpeedDelay", joyToSpeedDelay);
   nh->declare_parameter<double>("goalCloseDis", goalCloseDis);
+  nh->declare_parameter<double>("odomTimeoutSec", odomTimeoutSec);
+  nh->declare_parameter<double>("pathTimeoutSec", pathTimeoutSec);
+  nh->declare_parameter<bool>("allowStaticPath", allowStaticPath);
   nh->declare_parameter<bool>("is_real_robot", is_real_robot);
+  nh->declare_parameter<bool>("sendSportCommand", sendSportCommand);
 
   nh->get_parameter("sensorOffsetX", sensorOffsetX);
   nh->get_parameter("sensorOffsetY", sensorOffsetY);
@@ -278,11 +353,18 @@ int main(int argc, char** argv)
   nh->get_parameter("autonomySpeed", autonomySpeed);
   nh->get_parameter("joyToSpeedDelay", joyToSpeedDelay);
   nh->get_parameter("goalCloseDis", goalCloseDis);
+  nh->get_parameter("odomTimeoutSec", odomTimeoutSec);
+  nh->get_parameter("pathTimeoutSec", pathTimeoutSec);
+  nh->get_parameter("allowStaticPath", allowStaticPath);
   nh->get_parameter("is_real_robot", is_real_robot);
+  nh->get_parameter("sendSportCommand", sendSportCommand);
 
   auto subOdom = nh->create_subscription<nav_msgs::msg::Odometry>("/state_estimation", 5, odomHandler);
 
   auto subPath = nh->create_subscription<nav_msgs::msg::Path>("/path", 5, pathHandler);
+
+  auto subNavigationActive = nh->create_subscription<std_msgs::msg::Bool>(
+      "/navigation_active", rclcpp::QoS(1).transient_local(), navigationActiveHandler);
 
   auto subJoystick = nh->create_subscription<sensor_msgs::msg::Joy>("/joy", 5, joystickHandler);
 
@@ -297,6 +379,14 @@ int main(int argc, char** argv)
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header.frame_id = "vehicle";
 
+  const auto publishStop = [&]() {
+    cmd_vel.header.stamp = nh->now();
+    cmd_vel.twist.linear.x = 0.0;
+    cmd_vel.twist.linear.y = 0.0;
+    cmd_vel.twist.angular.z = 0.0;
+    pubSpeed->publish(cmd_vel);
+  };
+
   if (autonomyMode) {
     joySpeed = autonomySpeed / maxSpeed;
 
@@ -306,8 +396,39 @@ int main(int argc, char** argv)
 
   rclcpp::Rate rate(100);
   bool status = rclcpp::ok();
+  auto lastControlTick = std::chrono::steady_clock::now();
   while (status) {
+    const auto controlTick = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(controlTick - lastControlTick).count();
+    const double controlDt = std::max(0.001, std::min(elapsed, 0.05));
+    lastControlTick = controlTick;
     rclcpp::spin_some(nh);
+
+    if (!navigationActive) {
+      vehicleSpeed = 0.0F;
+      vehicleYawRate = 0.0F;
+      publishStop();
+      rate.sleep();
+      continue;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const bool odomFresh = odomReceived &&
+      std::chrono::duration<double>(now - lastOdomReceive).count() <= odomTimeoutSec;
+    const bool pathFresh = pathReceived && (allowStaticPath ||
+      std::chrono::duration<double>(now - lastPathReceive).count() <= pathTimeoutSec);
+    if (!odomFresh || !pathFresh || !pathInit || path.poses.empty()) {
+      // A route must be produced again after a stale input.  This prevents
+      // resuming an old trajectory when mapping or planning returns.
+      pathInit = false;
+      vehicleSpeed = 0.0;
+      vehicleYawRate = 0.0;
+      publishStop();
+      RCLCPP_WARN_THROTTLE(nh->get_logger(), *nh->get_clock(), 2000,
+        "Navigation stopped: waiting for fresh odometry and path");
+      rate.sleep();
+      continue;
+    }
 
     if (pathInit) {
       float vehicleXRel = cos(vehicleYawRec) * (vehicleX - vehicleXRec) 
@@ -361,7 +482,8 @@ int main(int argc, char** argv)
         joySpeed2 *= -1;
       }
 
-      if (fabs(vehicleSpeed) < 2.0 * maxAccel / 100.0) vehicleYawRate = -stopYawRateGain * dirDiff;
+      const float maxSpeedStep = static_cast<float>(maxAccel * controlDt);
+      if (fabs(vehicleSpeed) < 2.0F * maxSpeedStep) vehicleYawRate = -stopYawRateGain * dirDiff;
       else vehicleYawRate = -yawRateGain * dirDiff;
 
       if (vehicleYawRate > maxYawRate * PI / 180.0) vehicleYawRate = maxYawRate * PI / 180.0;
@@ -383,13 +505,12 @@ int main(int argc, char** argv)
       if (odomTime < slowInitTime + slowTime1 && slowInitTime > 0) joySpeed3 *= slowRate1;
       else if (odomTime < slowInitTime + slowTime1 + slowTime2 && slowInitTime > 0) joySpeed3 *= slowRate2;
 
-      if ((fabs(dirDiff) < dirDiffThre || (dis < goalCloseDis && fabs(dirDiff) < omniDirDiffThre))  && dis > stopDisThre) {
-        if (vehicleSpeed < joySpeed3) vehicleSpeed += maxAccel / 100.0;
-        else if (vehicleSpeed > joySpeed3) vehicleSpeed -= maxAccel / 100.0;
-      } else {
-        if (vehicleSpeed > 0) vehicleSpeed -= maxAccel / 100.0;
-        else if (vehicleSpeed < 0) vehicleSpeed += maxAccel / 100.0;
-      }
+      const float targetSpeed =
+        ((fabs(dirDiff) < dirDiffThre ||
+          (dis < goalCloseDis && fabs(dirDiff) < omniDirDiffThre)) &&
+         dis > stopDisThre) ? joySpeed3 : 0.0F;
+      const float speedDelta = targetSpeed - vehicleSpeed;
+      vehicleSpeed += std::max(-maxSpeedStep, std::min(speedDelta, maxSpeedStep));
 
       if (fabs(vehicleSpeed) > noRotSpeed) vehicleYawRate = 0;
 
@@ -406,8 +527,8 @@ int main(int argc, char** argv)
 
       pubSkipCount--;
       if (pubSkipCount < 0) {
-        cmd_vel.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
-        if (fabs(vehicleSpeed) <= maxAccel / 100.0) {
+        cmd_vel.header.stamp = nh->now();
+        if (fabs(vehicleSpeed) <= std::max(maxSpeedStep, 1.0e-4F)) {
           cmd_vel.twist.linear.x = 0;
           cmd_vel.twist.linear.y = 0;
         } else {
@@ -426,7 +547,7 @@ int main(int argc, char** argv)
 
         pubSkipCount = pubSkipNum;
 
-        if (is_real_robot)
+        if (is_real_robot && sendSportCommand)
         {
           if (cmd_vel.twist.linear.x == 0 && cmd_vel.twist.linear.y == 0 && cmd_vel.twist.angular.z == 0){
           	sport_req.StopMove(req);
