@@ -16,6 +16,7 @@
   <depend>visibility_graph_msg</depend>
   <depend>pcl_conversions</depend>
   <depend>PCL</depend>
+  <depend>visualization_msgs</depend>
 
   <!-- Optional: Test dependencies -->
   <!-- <test_depend>ament_lint_auto</test_depend> -->
