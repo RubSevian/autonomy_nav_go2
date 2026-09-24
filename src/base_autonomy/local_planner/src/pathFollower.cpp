@@ -395,9 +395,8 @@ int main(int argc, char** argv)
   }
 
   rclcpp::Rate rate(100);
-  bool status = rclcpp::ok();
   auto lastControlTick = std::chrono::steady_clock::now();
-  while (status) {
+  while (rclcpp::ok()) {
     const auto controlTick = std::chrono::steady_clock::now();
     const double elapsed = std::chrono::duration<double>(controlTick - lastControlTick).count();
     const double controlDt = std::max(0.001, std::min(elapsed, 0.05));
@@ -560,7 +559,6 @@ int main(int argc, char** argv)
       }
     }
 
-    status = rclcpp::ok();
     rate.sleep();
   }
 

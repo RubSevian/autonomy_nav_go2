@@ -810,6 +810,13 @@ void FARMaster::PublishNavigationActive(bool active) {
 }
 
 void FARMaster::WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedPtr route_goal) {
+  // Reject malformed input before it can become a pending goal.
+  if (!std::isfinite(route_goal->point.x) || !std::isfinite(route_goal->point.y) ||
+      !std::isfinite(route_goal->point.z) || route_goal->header.frame_id.empty()) {
+    RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal with empty frame or non-finite coordinates");
+    PublishNavigationActive(false);
+    return;
+  }
   if (!is_graph_init_) {
     pending_goal_ = *route_goal;
     has_pending_goal_ = true;
