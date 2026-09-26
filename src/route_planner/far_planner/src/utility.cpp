@@ -11,11 +11,27 @@
 /***************************************************************************************/
 
 void FARUtil::FilterCloud(const PointCloudPtr& point_cloud, const Eigen::Vector3d& leaf_size) {
-  // filter point cloud with constant leaf size 0.2m
+  // PCL VoxelGrid uses 32-bit voxel indices. Reject invalid/max-range
+  // points first so the local map cannot overflow that index space.
+  if (!point_cloud || point_cloud->empty()) return;
+  pcl::PointCloud<PCLPoint> valid_cloud;
+  valid_cloud.reserve(point_cloud->size());
+  constexpr float kLocalCoordinateLimit = 20.0F;
+  for (const auto &p : point_cloud->points) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
+    if (std::abs(p.x) > kLocalCoordinateLimit ||
+        std::abs(p.y) > kLocalCoordinateLimit ||
+        std::abs(p.z) > kLocalCoordinateLimit) continue;
+    valid_cloud.push_back(p);
+  }
+  if (valid_cloud.empty()) { point_cloud->clear(); return; }
   pcl::PointCloud<PCLPoint> filter_rs_cloud;
   pcl::VoxelGrid<PCLPoint> vg;
-  vg.setInputCloud(point_cloud);
-  vg.setLeafSize(leaf_size.x(), leaf_size.y(), leaf_size.z());
+  PointCloudPtr input(new pcl::PointCloud<PCLPoint>(std::move(valid_cloud)));
+  vg.setInputCloud(input);
+  vg.setLeafSize(std::max(leaf_size.x(), 1e-3),
+                 std::max(leaf_size.y(), 1e-3),
+                 std::max(leaf_size.z(), 1e-3));
   vg.filter(filter_rs_cloud);
   *point_cloud = filter_rs_cloud;
 }
