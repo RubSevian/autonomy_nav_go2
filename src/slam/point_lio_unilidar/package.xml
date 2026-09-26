@@ -27,7 +27,7 @@
   <depend>tf2</depend>
   <depend>pcl_ros</depend>
 
-  <build_depend>sensor_msgs</build_depend>
+  <depend>sensor_msgs</depend>
   <build_depend>message_generation</build_depend>
 
   <build_export_depend>message_runtime</build_export_depend>
