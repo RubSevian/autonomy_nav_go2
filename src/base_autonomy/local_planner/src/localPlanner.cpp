@@ -853,7 +853,8 @@ int main(int argc, char** argv)
       float relativeGoalY = 0;
       if (autonomyMode) {
         relativeGoalX = ((goalX - vehicleX) * cosVehicleYaw + (goalY - vehicleY) * sinVehicleYaw);
-        float relativeGoalY = (-(goalX - vehicleX) * sinVehicleYaw + (goalY - vehicleY) * cosVehicleYaw);
+        relativeGoalY = (-(goalX - vehicleX) * sinVehicleYaw
+                         + (goalY - vehicleY) * cosVehicleYaw);
 
         relativeGoalDis = sqrt(relativeGoalX * relativeGoalX + relativeGoalY * relativeGoalY);
         joyDir = atan2(relativeGoalY, relativeGoalX) * 180 / PI;
