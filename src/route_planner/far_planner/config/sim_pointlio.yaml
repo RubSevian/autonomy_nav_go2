@@ -1,4 +1,4 @@
-far_planner_node:
+far_planner:
   ros__parameters:
     # Dynamic Planner Default Params
     main_run_freq: 5.0

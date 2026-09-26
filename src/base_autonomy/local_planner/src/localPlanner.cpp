@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <chrono>
 #include <iostream>
+#include <string>
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
 #include "rclcpp/clock.hpp"
@@ -16,6 +17,8 @@
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
 
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
@@ -130,6 +133,31 @@ bool newTerrainCloud = false;
 // FAR owns this state: a /way_point alone must never arm motion because it is
 // an internal, repeatedly published intermediate result.
 bool navigationActive = false;
+bool hasOdometry = false;
+bool hasGoal = false;
+size_t lastLaserInputPoints = 0;
+size_t lastTerrainInputPoints = 0;
+
+struct LocalPlannerStatusData {
+  size_t plannerCloudPoints = 0;
+  size_t plannerCloudCropPoints = 0;
+  float relativeGoalX = 0;
+  float relativeGoalY = 0;
+  float relativeGoalDistance = 0;
+  float activePathScale = 0;
+  float activePathRange = 0;
+  int candidateTotal = 0;
+  int candidateBlocked = 0;
+  int candidateScored = 0;
+  int selectedGroupID = -1;
+  int selectedPathLength = 0;
+  bool pathFound = false;
+  size_t publishedPathSize = 0;
+  bool hasPlanningData = false;
+};
+LocalPlannerStatusData localStatus;
+rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr localStatusPub;
+std::string lastLocalStatusSignature;
 
 double odomTime = 0;
 double joyTime = 0;
@@ -139,6 +167,56 @@ float vehicleX = 0, vehicleY = 0, vehicleZ = 0;
 
 pcl::VoxelGrid<pcl::PointXYZI> laserDwzFilter, terrainDwzFilter;
 rclcpp::Node::SharedPtr nh;
+
+void publishLocalStatus(const std::string& state, const std::string& code,
+                        const std::string& text, bool force = false)
+{
+  if (!localStatusPub) return;
+  const std::string signature = state + "|" + code + "|" + text;
+  if (!force && signature == lastLocalStatusSignature) return;
+  lastLocalStatusSignature = signature;
+
+  diagnostic_msgs::msg::DiagnosticArray array;
+  array.header.stamp = nh->now();
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "local_planner";
+  status.hardware_id = "stage4d";
+  status.level = (code == "PATH_FOUND" || code == "PATH_PUBLISHED")
+      ? diagnostic_msgs::msg::DiagnosticStatus::OK
+      : diagnostic_msgs::msg::DiagnosticStatus::WARN;
+  status.message = text;
+  auto add = [&status](const std::string& key, const std::string& value) {
+    diagnostic_msgs::msg::KeyValue kv; kv.key = key; kv.value = value; status.values.push_back(kv);
+  };
+  auto number = [](double value, bool available) { return available ? std::to_string(value) : std::string("N/A"); };
+  const bool hasInput = useTerrainAnalysis ? lastTerrainInputPoints > 0 : lastLaserInputPoints > 0;
+  add("state", state); add("reason_code", code); add("reason_text", text);
+  add("navigation_active", navigationActive ? "true" : "false");
+  add("useTerrainAnalysis", useTerrainAnalysis ? "true" : "false");
+  add("checkObstacle", checkObstacle ? "true" : "false");
+  add("checkRotObstacle", checkRotObstacle ? "true" : "false");
+  add("vehicle_x", number(vehicleX, hasOdometry)); add("vehicle_y", number(vehicleY, hasOdometry));
+  add("vehicle_yaw", number(vehicleYaw, hasOdometry));
+  add("goal_x", number(goalX, hasGoal)); add("goal_y", number(goalY, hasGoal));
+  add("relative_goal_x", number(localStatus.relativeGoalX, localStatus.hasPlanningData));
+  add("relative_goal_y", number(localStatus.relativeGoalY, localStatus.hasPlanningData));
+  add("relative_goal_distance", number(localStatus.relativeGoalDistance, localStatus.hasPlanningData));
+  add("joy_dir", number(joyDir, localStatus.hasPlanningData));
+  add("input_cloud_points", hasInput ? std::to_string(useTerrainAnalysis ? lastTerrainInputPoints : lastLaserInputPoints) : "N/A");
+  add("planner_cloud_points", localStatus.hasPlanningData ? std::to_string(localStatus.plannerCloudPoints) : "N/A");
+  add("planner_cloud_crop_points", localStatus.hasPlanningData ? std::to_string(localStatus.plannerCloudCropPoints) : "N/A");
+  add("path_scale", number(localStatus.activePathScale, localStatus.hasPlanningData));
+  add("path_range", number(localStatus.activePathRange, localStatus.hasPlanningData));
+  add("candidate_paths_total", localStatus.hasPlanningData ? std::to_string(localStatus.candidateTotal) : "N/A");
+  add("candidate_paths_blocked", localStatus.hasPlanningData ? std::to_string(localStatus.candidateBlocked) : "N/A");
+  add("candidate_paths_scored", localStatus.hasPlanningData ? std::to_string(localStatus.candidateScored) : "N/A");
+  add("selected_group_id", localStatus.hasPlanningData ? std::to_string(localStatus.selectedGroupID) : "N/A");
+  add("selected_path_length", localStatus.hasPlanningData ? std::to_string(localStatus.selectedPathLength) : "N/A");
+  add("path_found", localStatus.hasPlanningData ? (localStatus.pathFound ? "true" : "false") : "N/A");
+  add("published_path_size", localStatus.hasPlanningData ? std::to_string(localStatus.publishedPathSize) : "N/A");
+  array.status.push_back(status);
+  localStatusPub->publish(array);
+}
 
 void odometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odom)
 {
@@ -153,6 +231,7 @@ void odometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odom)
   vehicleX = odom->pose.pose.position.x - cos(yaw) * sensorOffsetX + sin(yaw) * sensorOffsetY;
   vehicleY = odom->pose.pose.position.y - sin(yaw) * sensorOffsetX - cos(yaw) * sensorOffsetY;
   vehicleZ = odom->pose.pose.position.z;
+  hasOdometry = true;
 }
 
 void laserCloudHandler(const sensor_msgs::msg::PointCloud2::ConstSharedPtr laserCloud2)
@@ -160,6 +239,7 @@ void laserCloudHandler(const sensor_msgs::msg::PointCloud2::ConstSharedPtr laser
   if (!useTerrainAnalysis) {
     laserCloud->clear();
     pcl::fromROSMsg(*laserCloud2, *laserCloud);
+    lastLaserInputPoints = laserCloud->points.size();
 
     pcl::PointXYZI point;
     laserCloudCrop->clear();
@@ -193,6 +273,7 @@ void terrainCloudHandler(const sensor_msgs::msg::PointCloud2::ConstSharedPtr ter
   if (useTerrainAnalysis) {
     terrainCloud->clear();
     pcl::fromROSMsg(*terrainCloud2, *terrainCloud);
+    lastTerrainInputPoints = terrainCloud->points.size();
 
     pcl::PointXYZI point;
     terrainCloudCrop->clear();
@@ -257,6 +338,7 @@ void goalHandler(const geometry_msgs::msg::PointStamped::ConstSharedPtr goal)
   }
   goalX = goal->point.x;
   goalY = goal->point.y;
+  hasGoal = true;
 }
 
 void navigationActiveHandler(const std_msgs::msg::Bool::ConstSharedPtr active)
@@ -619,6 +701,9 @@ int main(int argc, char** argv)
   auto subCheckObstacle = nh->create_subscription<std_msgs::msg::Bool>("/check_obstacle", 5, checkObstacleHandler);
 
   auto pubPath = nh->create_publisher<nav_msgs::msg::Path>("/path", 5);
+  localStatusPub = nh->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+      "/local_planner/status", rclcpp::QoS(1).transient_local());
+  publishLocalStatus("STARTUP", "STARTUP", "localPlanner initialized; waiting for FAR navigation");
   nav_msgs::msg::Path path;
 
   #if PLOTPATHSET == 1
@@ -671,9 +756,15 @@ int main(int argc, char** argv)
     // Initial (0,0) launch parameters are configuration defaults, not a goal.
     // Do not turn point clouds into /path until FAR has accepted /goal_point.
     if (!navigationActive) {
+      publishLocalStatus("NAVIGATION_INACTIVE", "NAVIGATION_INACTIVE", "waiting for FAR /navigation_active=true");
       rate.sleep();
       status = rclcpp::ok();
       continue;
+    }
+    if (!hasGoal) {
+      publishLocalStatus("WAITING_FOR_GOAL", "WAITING_FOR_GOAL", "navigation is active but no FAR waypoint has been received");
+    } else if (!(newLaserCloud || newTerrainCloud)) {
+      publishLocalStatus("WAITING_FOR_POINTCLOUD", "WAITING_FOR_POINTCLOUD", "waiting for the next planner input cloud");
     }
 
     if (newLaserCloud || newTerrainCloud) {
@@ -758,8 +849,10 @@ int main(int argc, char** argv)
       if (pathRange < minPathRange) pathRange = minPathRange;
       float relativeGoalDis = adjacentRange;
 
+      float relativeGoalX = 0;
+      float relativeGoalY = 0;
       if (autonomyMode) {
-        float relativeGoalX = ((goalX - vehicleX) * cosVehicleYaw + (goalY - vehicleY) * sinVehicleYaw);
+        relativeGoalX = ((goalX - vehicleX) * cosVehicleYaw + (goalY - vehicleY) * sinVehicleYaw);
         float relativeGoalY = (-(goalX - vehicleX) * sinVehicleYaw + (goalY - vehicleY) * cosVehicleYaw);
 
         relativeGoalDis = sqrt(relativeGoalX * relativeGoalX + relativeGoalY * relativeGoalY);
@@ -771,12 +864,29 @@ int main(int argc, char** argv)
         }
       }
 
+      localStatus.hasPlanningData = true;
+      localStatus.plannerCloudPoints = plannerCloud->points.size();
+      localStatus.plannerCloudCropPoints = plannerCloudCrop->points.size();
+      localStatus.relativeGoalX = relativeGoalX;
+      localStatus.relativeGoalY = relativeGoalY;
+      localStatus.relativeGoalDistance = relativeGoalDis;
+      localStatus.pathFound = false;
+      localStatus.publishedPathSize = 0;
+      localStatus.selectedGroupID = -1;
+      localStatus.selectedPathLength = 0;
+      publishLocalStatus("PLANNING", "PLANNING", "evaluating local path candidates");
+
       bool pathFound = false;
       float defPathScale = pathScale;
       if (pathScaleBySpeed) pathScale = defPathScale * joySpeed;
       if (pathScale < minPathScale) pathScale = minPathScale;
 
       while (pathScale >= minPathScale && pathRange >= minPathRange) {
+        localStatus.activePathScale = pathScale;
+        localStatus.activePathRange = pathRange;
+        localStatus.candidateTotal = 36 * pathNum;
+        localStatus.candidateBlocked = 0;
+        localStatus.candidateScored = 0;
         for (int i = 0; i < 36 * pathNum; i++) {
           clearPathList[i] = 0;
           pathPenaltyList[i] = 0;
@@ -878,8 +988,11 @@ int main(int argc, char** argv)
             float score = (1 - sqrt(sqrt(dirWeight * dirDiff))) * rotDirW * rotDirW * rotDirW * rotDirW * penaltyScore;
             if (relativeGoalDis < goalCloseDis) score = (1 - sqrt(sqrt(dirWeight * dirDiff))) * groupDirW * groupDirW * penaltyScore;
             if (score > 0) {
+              localStatus.candidateScored++;
               clearPathPerGroupScore[groupNum * rotDir + pathList[i % pathNum]] += score;
             }
+          } else {
+            localStatus.candidateBlocked++;
           }
         }
 
@@ -903,6 +1016,8 @@ int main(int argc, char** argv)
 
           selectedGroupID = selectedGroupID % groupNum;
           int selectedPathLength = startPaths[selectedGroupID]->points.size();
+          localStatus.selectedGroupID = selectedGroupID;
+          localStatus.selectedPathLength = selectedPathLength;
           path.poses.resize(selectedPathLength);
           for (int i = 0; i < selectedPathLength; i++) {
             float x = startPaths[selectedGroupID]->points[i].x;
@@ -922,7 +1037,10 @@ int main(int argc, char** argv)
 
           path.header.stamp = rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
           path.header.frame_id = "vehicle";
+          localStatus.pathFound = true;
+          localStatus.publishedPathSize = path.poses.size();
           pubPath->publish(path);
+          publishLocalStatus("PATH_PUBLISHED", "PATH_PUBLISHED", "selected local path published");
 
           #if PLOTPATHSET == 1
           freePaths->clear();
@@ -987,6 +1105,18 @@ int main(int argc, char** argv)
       pathScale = defPathScale;
 
       if (!pathFound) {
+        localStatus.pathFound = false;
+        localStatus.selectedGroupID = -1;
+        localStatus.selectedPathLength = 0;
+        localStatus.publishedPathSize = 1;
+        const std::string stopReason = localStatus.candidateBlocked >= localStatus.candidateTotal
+            ? "ALL_CANDIDATES_BLOCKED" : "NO_POSITIVE_SCORE";
+        publishLocalStatus("STOP_PATH_PUBLISHED", stopReason,
+            "no usable local candidate path exists");
+        RCLCPP_WARN(nh->get_logger(),
+            "[LOCAL][STOP] reason=%s cloud=%zu cropped=%zu blocked=%d scored=%d goal_dist=%.3f",
+            stopReason.c_str(), localStatus.plannerCloudPoints, localStatus.plannerCloudCropPoints,
+            localStatus.candidateBlocked, localStatus.candidateScored, localStatus.relativeGoalDistance);
         path.poses.resize(1);
         path.poses[0].pose.position.x = 0;
         path.poses[0].pose.position.y = 0;

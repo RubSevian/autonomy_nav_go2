@@ -10,6 +10,8 @@
 #include "planner_visualizer.h"
 #include "scan_handler.h"
 #include "graph_msger.h"
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
 
 
 struct FARMasterParams {
@@ -55,6 +57,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr read_command_sub_, save_command_sub_;
 
     rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr goal_pub_;
+    rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr planner_status_pub_;
     rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr boundary_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr runtime_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr planning_time_pub_;
@@ -82,12 +85,34 @@ private:
     geometry_msgs::msg::PointStamped pending_goal_;
     bool has_pending_goal_ = false;
 
-    bool is_cloud_init_, is_scan_init_, is_odom_init_, is_planner_running_;
-    bool is_graph_init_;
+    bool is_cloud_init_ = false, is_scan_init_ = false, is_odom_init_ = false, is_planner_running_ = false;
+    bool is_graph_init_ = false;
     bool navigation_active_ = false;
     bool navigation_status_published_ = false;
 
+    // Retained facts for diagnostic snapshots. They are populated only from
+    // data FAR has actually processed; "N/A" is reported otherwise.
+    bool goal_received_ = false;
+    bool has_goal_original_ = false;
+    std::string goal_frame_ = "N/A";
+    Point3D goal_original_;
+    Point3D goal_current_;
+    Point3D graph_goal_origin_;
+    bool has_goal_current_ = false;
+    bool has_graph_goal_origin_ = false;
+    bool goal_has_parent_ = false;
+    bool goal_has_free_parent_ = false;
+    bool goal_is_free_traversable_ = false;
+    bool goal_is_in_freespace_ = false;
+    std::size_t goal_local_free_count_ = 0;
+    std::size_t goal_local_obs_count_ = 0;
+    std::size_t path_size_ = 0;
+    bool planning_failed_ = false;
+    bool goal_reached_ = false;
+    std::string last_status_signature_;
+
     void PublishNavigationActive(bool active);
+    void PublishPlannerStatus(const std::string& state, const std::string& code, const std::string& text, bool force = false);
 
     PointCloudPtr new_vertices_ptr_;
     PointCloudPtr temp_obs_ptr_;

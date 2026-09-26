@@ -234,6 +234,10 @@ inline void ResetPlannerInternalValues() {
 }
 
 const NavNodePtr& GetGoalNodePtr() const { return goal_node_ptr_;};
+bool IsGoalInFreespace() const { return is_goal_in_freespace_; }
+bool IsTerrainAssociated() const { return is_terrain_associated_; }
+bool IsFreeNavigationGoal() const { return is_free_nav_goal_; }
+const NavNodePtr& GetOdomNodePtr() const { return odom_node_ptr_; }
 
 Point3D GetOriginNodePos(const bool& is_adjusted_z) const {
     if (goal_node_ptr_ == NULL) return Point3D(0,0,0);

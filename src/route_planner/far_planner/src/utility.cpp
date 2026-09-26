@@ -11,17 +11,13 @@
 /***************************************************************************************/
 
 void FARUtil::FilterCloud(const PointCloudPtr& point_cloud, const Eigen::Vector3d& leaf_size) {
-  // PCL VoxelGrid uses 32-bit voxel indices. Reject invalid/max-range
-  // points first so the local map cannot overflow that index space.
+  // Reject malformed sensor points. Range selection belongs to the terrain
+  // pipeline; an absolute world-coordinate clip would corrupt a valid map.
   if (!point_cloud || point_cloud->empty()) return;
   pcl::PointCloud<PCLPoint> valid_cloud;
   valid_cloud.reserve(point_cloud->size());
-  constexpr float kLocalCoordinateLimit = 20.0F;
   for (const auto &p : point_cloud->points) {
     if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) continue;
-    if (std::abs(p.x) > kLocalCoordinateLimit ||
-        std::abs(p.y) > kLocalCoordinateLimit ||
-        std::abs(p.z) > kLocalCoordinateLimit) continue;
     valid_cloud.push_back(p);
   }
   if (valid_cloud.empty()) { point_cloud->clear(); return; }

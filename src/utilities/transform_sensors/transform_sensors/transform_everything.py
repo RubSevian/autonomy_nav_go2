@@ -74,7 +74,9 @@ class Repuber(Node):
         self.cam_offset = 0.046825
 
         self.declare_parameter('calibration_path', '')
+        self.declare_parameter('preserve_sensor_stamp', False)
         calibration_path = self.get_parameter('calibration_path').value
+        self.preserve_sensor_stamp = bool(self.get_parameter('preserve_sensor_stamp').value)
         calib_data = {
                 'acc_bias_x': 0.0,
                 'acc_bias_y': 0.0,
@@ -85,9 +87,11 @@ class Repuber(Node):
                 'ang_z2x_proj': 0.15,
                 'ang_z2y_proj': -0.28
             }
-        if not calibration_path:
+        if not calibration_path and not self.preserve_sensor_stamp:
             calibration_path = os.path.join(os.path.expanduser('~'), 'Desktop/imu_calib_data.yaml')
         try:
+            if not calibration_path:
+                raise OSError('simulation calibration_path is required')
             with open(calibration_path, 'r', encoding='utf-8') as calib_file:
                 loaded_calib_data = yaml.safe_load(calib_file) or {}
             if not isinstance(loaded_calib_data, dict):
@@ -150,7 +154,10 @@ class Repuber(Node):
         return is_in_box
 
     def cloud_callback(self, data):
-        if not self.time_stamp_offset_set:
+        if self.preserve_sensor_stamp:
+            self.time_stamp_offset = 0
+            self.time_stamp_offset_set = True
+        elif not self.time_stamp_offset_set:
             self.time_stamp_offset = self.get_clock().now().nanoseconds - Time.from_msg(data.header.stamp).nanoseconds
             self.time_stamp_offset_set = True
                 
@@ -195,7 +202,8 @@ class Repuber(Node):
         transformed_points = transformed_points[valid_xyz & ~in_filter_box]
         
         elevated_cloud = pc2.create_cloud(data.header, data.fields, transformed_points)
-        elevated_cloud.header.stamp = Time(nanoseconds=Time.from_msg(elevated_cloud.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
+        if not self.preserve_sensor_stamp:
+            elevated_cloud.header.stamp = Time(nanoseconds=Time.from_msg(elevated_cloud.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
         elevated_cloud.header.frame_id = "body"
         elevated_cloud.is_dense = bool(data.is_dense and valid_xyz.all())
 
@@ -284,7 +292,8 @@ class Repuber(Node):
         transformed_imu.angular_velocity = transformed_angular_velocity
         transformed_imu.linear_acceleration = transformed_linear_acceleration
         
-        transformed_imu.header.stamp = Time(nanoseconds=Time.from_msg(transformed_imu.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
+        if not self.preserve_sensor_stamp:
+            transformed_imu.header.stamp = Time(nanoseconds=Time.from_msg(transformed_imu.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
         
         self.imu_raw_pub.publish(transformed_imu)
         

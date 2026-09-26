@@ -249,7 +249,10 @@ bool GraphPlanner::PathToGoal(const NavNodePtr& goal_ptr,
                 is_free_nav_goal_ = false;
                 return true;
             }
-            if (FARUtil::IsDebug) RCLCPP_ERROR(nh_->get_logger(), "****************** FAIL TO REACH GOAL ******************");
+            RCLCPP_WARN(nh_->get_logger(),
+                        "FAR cannot connect goal: odom=[%.2f %.2f %.2f], goal=[%.2f %.2f %.2f], graph_nodes=%zu",
+                        odom_node_ptr_->position.x, odom_node_ptr_->position.y, odom_node_ptr_->position.z,
+                        goal_ptr->position.x, goal_ptr->position.y, goal_ptr->position.z, current_graph_.size());
             this->GoalReset();
             is_goal_init_ = false, _is_fail = true;
             return false;

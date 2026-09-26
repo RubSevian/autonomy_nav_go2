@@ -16,6 +16,10 @@
   <arg name="odomTimeoutSec" default="0.5"/>
   <arg name="pathTimeoutSec" default="0.5"/>
   <arg name="allowStaticPath" default="false"/>
+  <!-- Keep original real-robot TF behavior by default. Stage4D may disable
+       only a transform that it already publishes authoritatively. -->
+  <arg name="publishSensorToVehicleTf" default="true"/>
+  <arg name="publishSensorToCameraTf" default="true"/>
 
   <node pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
     <param name="pathFolder" value="$(find-pkg-share local_planner)/paths" />
@@ -99,8 +103,8 @@
     <param name="allowStaticPath" value="$(var allowStaticPath)"/>
   </node>
 
-  <node pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
+  <node if="$(var publishSensorToVehicleTf)" pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
 
-  <node pkg="tf2_ros" exec="static_transform_publisher" name="sensorTransPublisher" args="0 0 $(var cameraOffsetZ) -1.5707963 0 -1.5707963 /sensor /camera"/>
+  <node if="$(var publishSensorToCameraTf)" pkg="tf2_ros" exec="static_transform_publisher" name="sensorTransPublisher" args="0 0 $(var cameraOffsetZ) -1.5707963 0 -1.5707963 /sensor /camera"/>
   
 </launch>
