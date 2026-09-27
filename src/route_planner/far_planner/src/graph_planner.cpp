@@ -145,175 +145,101 @@ bool GraphPlanner::PathToGoal(const NavNodePtr& goal_ptr,
                               Point3D& _goal_p,
                               bool& _is_fail,
                               bool& _is_succeed,
-                              bool& _is_free_nav) 
+                              bool& _is_free_nav)
 {
-    if (!is_goal_init_) return false;
-    if (odom_node_ptr_ == NULL || goal_ptr == NULL || current_graph_.empty()) {
-        RCLCPP_ERROR(nh_->get_logger(), "GP: Graph or Goal is not initialized correctly.");
+    _is_fail = false;
+    _is_succeed = false;
+    _is_free_nav = false;
+    global_path.clear();
+    last_path_status_ = FARPathValidation::Status::NO_VALID_PATH;
+    if (!is_goal_init_ || odom_node_ptr_ == NULL || goal_ptr == NULL || current_graph_.empty()) {
+        last_path_status_ = FARPathValidation::Status::INVALID_PARENT_CHAIN;
+        RCLCPP_WARN(nh_->get_logger(), "GP: path request is not initialized; retaining active goal for retry.");
+        _is_fail = true;
         return false;
     }
-    _is_fail = false, _is_succeed = false;
-    global_path.clear();
-    _goal_p = goal_ptr->position;
-    if (current_graph_.size() == 1) {
-        // update global path
-        global_path.push_back(odom_node_ptr_);
-        global_path.push_back(goal_ptr);
-        _nav_node_ptr = this->NextNavWaypointFromPath(global_path, goal_ptr);
-        _is_free_nav = is_free_nav_goal_;
-        return true;       
+    if (!FARPathValidation::IsFiniteNode(odom_node_ptr_) || !FARPathValidation::IsFiniteNode(goal_ptr)) {
+        last_path_status_ = FARPathValidation::Status::NONFINITE_NODE;
+        _is_fail = true;
+        return false;
     }
-    if ((odom_node_ptr_->position - _goal_p).norm() < gp_params_.converge_dist || 
-        (odom_node_ptr_->position - origin_goal_pos_).norm() < gp_params_.converge_dist)
-    {
-        if (FARUtil::IsDebug) RCLCPP_INFO(nh_->get_logger(), "GP: *********** Goal Reached! ***********");
-        global_path.push_back(odom_node_ptr_);
-        if ((odom_node_ptr_->position - _goal_p).norm() > gp_params_.converge_dist) {
-            _goal_p = origin_goal_pos_;
-            goal_ptr->position = _goal_p;   
-        }
+
+    _goal_p = goal_ptr->position;
+    if ((odom_node_ptr_->position - _goal_p).norm() < gp_params_.converge_dist ||
+        (odom_node_ptr_->position - origin_goal_pos_).norm() < gp_params_.converge_dist) {
+        global_path = {odom_node_ptr_, goal_ptr};
+        const auto validation = FARPathValidation::ValidateRoute(global_path);
+        last_path_status_ = validation.status;
+        if (!validation.ok()) { _is_fail = true; global_path.clear(); return false; }
         _is_succeed = true;
-        global_path.push_back(goal_ptr);
-        _nav_node_ptr = goal_ptr;
         _is_free_nav = is_free_nav_goal_;
-        this->GoalReset();
+        _nav_node_ptr = goal_ptr;
+        GoalReset();
         is_goal_init_ = false;
         return true;
     }
 
-    //check free navigation command
     if (!command_is_free_nav_) is_free_nav_goal_ = false;
     else if (goal_ptr->is_free_traversable) is_free_nav_goal_ = true;
-    // auto-switch model based on command and navigation status
-    if (gp_params_.is_autoswitch && command_is_free_nav_) {
-        if (goal_ptr->is_free_traversable || (is_free_nav_goal_ && is_global_path_init_ && path_momentum_counter_ < gp_params_.momentum_thred)) {
-            is_free_nav_goal_ = true;
-        } else {
-            is_free_nav_goal_ = false;
-        }
-    }   
-    _is_free_nav = is_free_nav_goal_;
-    const NavNodePtr reach_nav_node = is_free_nav_goal_ ? goal_ptr->free_parent : goal_ptr->parent;
-    if (reach_nav_node != NULL) { // valid path found
-        if (is_global_path_init_ && path_momentum_counter_ < gp_params_.momentum_thred && 
-            last_waypoint_dist_ > gp_params_.adjust_radius && reach_nav_node != odom_node_ptr_) // momentum navigation
-        {   // check for momentum path
-            const float cur_waypoint_dist = (odom_node_ptr_->position - next_waypoint_).norm();
-            if (cur_waypoint_dist > gp_params_.adjust_radius) {
-                if ((odom_node_ptr_->position - last_planning_odom_).norm() < gp_params_.momentum_dist) { // movement momentum
-                    global_path = recorded_path_;
-                    _nav_node_ptr = this->NextNavWaypointFromPath(global_path, goal_ptr);
-                    path_momentum_counter_ ++;
-                    if (FARUtil::IsDebug) RCLCPP_INFO_STREAM(nh_->get_logger(), "Momentum path counter: " << path_momentum_counter_ << " Over max: "<< gp_params_.momentum_thred);
-                    return true;
-                }
-            }
-        }
-        NodePtrStack cur_path;
-        if (this->ReconstructPath(goal_ptr, is_free_nav_goal_, cur_path)) {
-            _nav_node_ptr = this->NextNavWaypointFromPath(cur_path, goal_ptr);
-            if (is_global_path_init_ && path_momentum_counter_ < gp_params_.momentum_thred) { // momentum navigation
-                const float cur_waypoint_dist = (odom_node_ptr_->position - _nav_node_ptr->position).norm();
-                if (last_waypoint_dist_ > gp_params_.adjust_radius && cur_waypoint_dist > gp_params_.adjust_radius) {
-                    const float heading_dot = (next_waypoint_ - last_planning_odom_).norm_dot(_nav_node_ptr->position - odom_node_ptr_->position);
-                    if (heading_dot < 0.0f) { // consistant heading momentum
-                        global_path = recorded_path_;
-                        _nav_node_ptr = this->NextNavWaypointFromPath(global_path, goal_ptr);
-                        path_momentum_counter_ ++;
-                        if (FARUtil::IsDebug) RCLCPP_INFO_STREAM(nh_->get_logger(), "Momentum path counter: " << path_momentum_counter_ << "; Over max: "<< gp_params_.momentum_thred);
-                        return true;
-                    }
-                }
-            } 
-            // plan new path to goal
-            global_path = cur_path;
-            this->RecordPathInfo(global_path);
-            return true;
-        }
-    } else { // no valid path found
-        if (is_global_path_init_ && path_momentum_counter_ < gp_params_.momentum_thred) { // momentum go forward
-            global_path = recorded_path_;
-            _nav_node_ptr = this->NextNavWaypointFromPath(global_path, goal_ptr);
-            path_momentum_counter_ ++;
-            if (FARUtil::IsDebug) RCLCPP_INFO_STREAM(nh_->get_logger(), "Momentum path counter: " << path_momentum_counter_ << "; Over max: "<< gp_params_.momentum_thred);
-            return true;
-        } else {
-            if (gp_params_.is_autoswitch && is_free_nav_goal_) { // autoswitch to attemptable navigation
-                if (FARUtil::IsDebug) RCLCPP_WARN(nh_->get_logger(), "GP: free navigation fails, auto swiching to attemptable navigation...");
-                if (is_global_path_init_) {
-                    global_path = recorded_path_;
-                    _nav_node_ptr = this->NextNavWaypointFromPath(global_path, goal_ptr);
-                } else {
-                    _nav_node_ptr = goal_ptr;
-                }
-                is_free_nav_goal_ = false;
-                return true;
-            }
-            RCLCPP_WARN(nh_->get_logger(),
-                        "FAR cannot connect goal: odom=[%.2f %.2f %.2f], goal=[%.2f %.2f %.2f], graph_nodes=%zu",
-                        odom_node_ptr_->position.x, odom_node_ptr_->position.y, odom_node_ptr_->position.z,
-                        goal_ptr->position.x, goal_ptr->position.y, goal_ptr->position.z, current_graph_.size());
-            this->GoalReset();
-            is_goal_init_ = false, _is_fail = true;
-            return false;
-        }
+    if (gp_params_.is_autoswitch && command_is_free_nav_ && !goal_ptr->is_free_traversable) {
+        // Retry the ordinary graph in the next timer cycle.  Do not revive a
+        // previously recorded path: graph topology may already have changed.
+        is_free_nav_goal_ = false;
     }
-    if (FARUtil::IsDebug) RCLCPP_ERROR(nh_->get_logger(), "GP: unexpected error happend within planning, navigation to goal fails.");
-    this->GoalReset();
-    is_goal_init_ = false, _is_fail = true;
-    return false;
+    _is_free_nav = is_free_nav_goal_;
+
+    const auto reconstruction = FARPathValidation::ReconstructAndValidate(
+        goal_ptr, is_free_nav_goal_, odom_node_ptr_);
+    last_path_status_ = reconstruction.status;
+    if (!reconstruction.ok()) {
+        _is_fail = true;
+        RCLCPP_WARN(nh_->get_logger(), "GP: rejecting parent chain (%s): %s; will retry without clearing goal",
+                    FARPathValidation::ToString(reconstruction.status), reconstruction.detail.c_str());
+        return false;
+    }
+    global_path.assign(reconstruction.path.begin(), reconstruction.path.end());
+    _nav_node_ptr = NextNavWaypointFromPath(global_path, goal_ptr);
+    if (!FARPathValidation::IsFiniteNode(_nav_node_ptr)) {
+        last_path_status_ = FARPathValidation::Status::NO_VALID_PATH;
+        global_path.clear();
+        _is_fail = true;
+        return false;
+    }
+    RecordPathInfo(global_path);
+    return true;
 }
 
 bool GraphPlanner::ReconstructPath(const NavNodePtr& goal_node_ptr,
                                    const bool& is_free_nav,
                                    NodePtrStack& global_path)
 {
-    if (goal_node_ptr == NULL || (!is_free_nav && goal_node_ptr->parent == NULL) || (is_free_nav && goal_node_ptr->free_parent == NULL)) {
-        RCLCPP_ERROR(nh_->get_logger(), "GP: Critical! reconstruct path error: goal node or its parent equals to NULL.");
+    const auto result = FARPathValidation::ReconstructAndValidate(
+        goal_node_ptr, is_free_nav, odom_node_ptr_);
+    last_path_status_ = result.status;
+    global_path.clear();
+    if (!result.ok()) {
+        RCLCPP_WARN(nh_->get_logger(), "GP: reconstruct path rejected (%s): %s",
+                    FARPathValidation::ToString(result.status), result.detail.c_str());
         return false;
     }
-    global_path.clear();
-    NavNodePtr check_ptr = goal_node_ptr;
-    global_path.push_back(check_ptr);
-    if (is_free_nav) {
-        while (true) {
-            const NavNodePtr parent_ptr = check_ptr->free_parent;
-            if (parent_ptr->free_direct != NodeFreeDirect::CONCAVE) {
-                global_path.push_back(parent_ptr);
-            }
-            if (parent_ptr->free_parent == NULL) break;
-            check_ptr = parent_ptr;
-        }
-    } else {
-        while (true) {
-            const NavNodePtr parent_ptr = check_ptr->parent;
-            if (parent_ptr->free_direct != NodeFreeDirect::CONCAVE) {
-                global_path.push_back(parent_ptr);
-            }
-            if (parent_ptr->parent == NULL) break;
-            check_ptr = parent_ptr;
-        } 
-    }
-    std::reverse(global_path.begin(), global_path.end()); 
+    global_path.assign(result.path.begin(), result.path.end());
     return true;
 }
 
-NavNodePtr GraphPlanner::NextNavWaypointFromPath(const NodePtrStack& global_path, const NavNodePtr goal_ptr) {
-    if (global_path.size() < 2) {
-        RCLCPP_ERROR(nh_->get_logger(), "GP: global path size less than 2.");
-        return goal_ptr;
+NavNodePtr GraphPlanner::NextNavWaypointFromPath(const NodePtrStack& global_path, const NavNodePtr) {
+    const auto validation = FARPathValidation::ValidateRoute(global_path);
+    if (!validation.ok() || odom_node_ptr_ == NULL) {
+        last_path_status_ = validation.ok() ? FARPathValidation::Status::INVALID_PARENT_CHAIN : validation.status;
+        RCLCPP_WARN(nh_->get_logger(), "GP: refusing invalid route for waypoint (%s)",
+                    FARPathValidation::ToString(last_path_status_));
+        return NULL;
     }
-    NavNodePtr nav_point_ptr;
-    const std::size_t path_size = global_path.size();
     std::size_t nav_idx = 1;
-    nav_point_ptr = global_path[nav_idx];
+    NavNodePtr nav_point_ptr = global_path[nav_idx];
     float dist = (nav_point_ptr->position - odom_node_ptr_->position).norm();
-    while (dist < gp_params_.converge_dist) {
-        nav_idx ++;
-        if (nav_idx < path_size) {
-            nav_point_ptr = global_path[nav_idx];
-            dist = (nav_point_ptr->position - odom_node_ptr_->position).norm();
-        } else break;
+    while (dist < gp_params_.converge_dist && ++nav_idx < global_path.size()) {
+        nav_point_ptr = global_path[nav_idx];
+        dist = (nav_point_ptr->position - odom_node_ptr_->position).norm();
     }
     return nav_point_ptr;
 }

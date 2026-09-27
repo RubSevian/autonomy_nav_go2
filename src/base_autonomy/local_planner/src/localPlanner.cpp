@@ -135,6 +135,11 @@ bool newTerrainCloud = false;
 bool navigationActive = false;
 bool hasOdometry = false;
 bool hasGoal = false;
+bool waypointPendingImmediatePlan = false;
+bool hasCachedPlannerInput = false;
+std::uint64_t waypointRevision = 0;
+std::chrono::steady_clock::time_point lastPlannerInputReceive;
+std::chrono::steady_clock::time_point waypointReceive;
 size_t lastLaserInputPoints = 0;
 size_t lastTerrainInputPoints = 0;
 
@@ -153,6 +158,7 @@ struct LocalPlannerStatusData {
   int selectedPathLength = 0;
   bool pathFound = false;
   size_t publishedPathSize = 0;
+  double waypointToPathDelaySec = -1.0;
   bool hasPlanningData = false;
 };
 LocalPlannerStatusData localStatus;
@@ -231,6 +237,8 @@ void publishLocalStatus(const std::string& state, const std::string& code,
   add("selected_path_length", localStatus.hasPlanningData ? std::to_string(localStatus.selectedPathLength) : "N/A");
   add("path_found", localStatus.hasPlanningData ? (localStatus.pathFound ? "true" : "false") : "N/A");
   add("published_path_size", localStatus.hasPlanningData ? std::to_string(localStatus.publishedPathSize) : "N/A");
+  add("waypoint_revision", std::to_string(waypointRevision));
+  add("waypoint_to_path_delay_sec", localStatus.waypointToPathDelaySec >= 0.0 ? std::to_string(localStatus.waypointToPathDelaySec) : "N/A");
   array.status.push_back(status);
   localStatusPub->publish(array);
 }
@@ -282,6 +290,8 @@ void laserCloudHandler(const sensor_msgs::msg::PointCloud2::ConstSharedPtr laser
     laserDwzFilter.filter(*laserCloudDwz);
 
     newLaserCloud = true;
+    hasCachedPlannerInput = true;
+    lastPlannerInputReceive = std::chrono::steady_clock::now();
   }
 }
 
@@ -316,6 +326,8 @@ void terrainCloudHandler(const sensor_msgs::msg::PointCloud2::ConstSharedPtr ter
     terrainDwzFilter.filter(*terrainCloudDwz);
 
     newTerrainCloud = true;
+    hasCachedPlannerInput = true;
+    lastPlannerInputReceive = std::chrono::steady_clock::now();
   }
 }
 
@@ -356,6 +368,9 @@ void goalHandler(const geometry_msgs::msg::PointStamped::ConstSharedPtr goal)
   goalX = goal->point.x;
   goalY = goal->point.y;
   hasGoal = true;
+  waypointPendingImmediatePlan = true;
+  ++waypointRevision;
+  waypointReceive = std::chrono::steady_clock::now();
 }
 
 void navigationActiveHandler(const std_msgs::msg::Bool::ConstSharedPtr active)
@@ -778,13 +793,20 @@ int main(int argc, char** argv)
       status = rclcpp::ok();
       continue;
     }
+    const auto plannerNow = std::chrono::steady_clock::now();
+    const bool cachedInputFresh = hasCachedPlannerInput &&
+        std::chrono::duration<double>(plannerNow - lastPlannerInputReceive).count() <= 0.5;
+    const bool immediateWaypointPlan = waypointPendingImmediatePlan && hasOdometry && cachedInputFresh;
     if (!hasGoal) {
       publishLocalStatus("WAITING_FOR_GOAL", "WAITING_FOR_GOAL", "navigation is active but no FAR waypoint has been received");
+    } else if (waypointPendingImmediatePlan && !immediateWaypointPlan) {
+      publishLocalStatus("WAITING_FOR_FRESH_INPUT_AFTER_WAYPOINT", "WAITING_FOR_FRESH_INPUT_AFTER_WAYPOINT",
+          "new FAR waypoint is waiting for fresh cached odometry/perception");
     } else if (!(newLaserCloud || newTerrainCloud)) {
       publishLocalStatus("WAITING_FOR_POINTCLOUD", "WAITING_FOR_POINTCLOUD", "waiting for the next planner input cloud");
     }
 
-    if (newLaserCloud || newTerrainCloud) {
+    if (newLaserCloud || newTerrainCloud || immediateWaypointPlan) {
       if (newLaserCloud) {
         newLaserCloud = false;
 
@@ -1152,6 +1174,12 @@ int main(int argc, char** argv)
         freePaths2.header.frame_id = "vehicle";
         pubFreePaths->publish(freePaths2);
         #endif
+      }
+
+      if (waypointPendingImmediatePlan) {
+        localStatus.waypointToPathDelaySec = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - waypointReceive).count();
+        waypointPendingImmediatePlan = false;
       }
 
       /*sensor_msgs::msg::PointCloud2 plannerCloud2;

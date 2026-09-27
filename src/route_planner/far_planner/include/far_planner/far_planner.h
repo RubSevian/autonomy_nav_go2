@@ -12,6 +12,7 @@
 #include "graph_msger.h"
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <cstdint>
 
 
 struct FARMasterParams {
@@ -47,6 +48,7 @@ private:
     rclcpp::Node::SharedPtr nh_;
 
     rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr reset_graph_sub_;
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr navigation_cancel_sub_;
     rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_command_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr update_command_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
@@ -110,6 +112,21 @@ private:
     bool planning_failed_ = false;
     bool goal_reached_ = false;
     std::string last_status_signature_;
+    // Route commits are an atomic handoff boundary: no partially validated
+    // candidate may replace these values or be sent to localPlanner.
+    NodePtrStack committed_route_;
+    bool has_committed_route_ = false;
+    std::uint64_t goal_revision_ = 0;
+    std::uint64_t graph_revision_ = 0;
+    std::uint64_t plan_revision_ = 0;
+    std::uint64_t committed_route_revision_ = 0;
+    std::uint64_t waypoint_revision_ = 0;
+    std::uint64_t committed_route_hash_ = 0;
+    std::string committed_route_nodes_ = "N/A";
+    Point3D committed_waypoint_;
+    bool has_committed_waypoint_ = false;
+    geometry_msgs::msg::PointStamped last_requested_goal_;
+    bool has_last_requested_goal_ = false;
 
     void PublishNavigationActive(bool active);
     void PublishPlannerStatus(const std::string& state, const std::string& code, const std::string& text, bool force = false);
@@ -240,6 +257,7 @@ private:
 
     void ScanCallBack(const sensor_msgs::msg::PointCloud2::SharedPtr scan_pc);
     void WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedPtr route_goal);
+    void NavigationCancelCallBack(const std_msgs::msg::Empty::SharedPtr msg);
 
     void ExtractDynamicObsFromScan(const PointCloudPtr scanCloudIn, 
                                    const PointCloudPtr obsCloudIn,

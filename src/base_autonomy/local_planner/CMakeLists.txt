@@ -41,7 +41,7 @@ add_executable(pathFollower src/pathFollower.cpp)
 #   "$<INSTALL_INTERFACE:include/${PROJECT_NAME}>")
 
 ament_target_dependencies(localPlanner rclcpp std_msgs sensor_msgs diagnostic_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs message_filters pcl_ros pcl_conversions)
-ament_target_dependencies(pathFollower rclcpp std_msgs sensor_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs message_filters pcl_ros pcl_conversions go2_sport_api unitree_api)
+ament_target_dependencies(pathFollower rclcpp std_msgs sensor_msgs diagnostic_msgs nav_msgs geometry_msgs tf2 tf2_ros tf2_geometry_msgs message_filters pcl_ros pcl_conversions go2_sport_api unitree_api)
 
 # get_property(dirs DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY INCLUDE_DIRECTORIES)
 # foreach(dir ${dirs})

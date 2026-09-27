@@ -74,6 +74,25 @@ void DPVisualizer::VizPath(const NodePtrStack& global_path, const bool& is_free_
     viz_path_pub_->publish(path_marker);
 }
 
+void DPVisualizer::ClearNavigationVisuals() {
+    // /viz_path_topic owns the global route marker.
+    Marker path_marker;
+    this->SetMarker(nh_, VizColor::EMERALD, "global_path", 0.75f, 0.9f, path_marker);
+    path_marker.action = Marker::DELETE;
+    viz_path_pub_->publish(path_marker);
+
+    // Goal-related points are carried by /viz_node_topic.  Delete exact
+    // namespace/id pairs so the visibility graph and terrain remain intact.
+    MarkerArray delete_markers;
+    for (const char* ns : {"original_goal", "waypoint", "free_goal"}) {
+        Marker marker;
+        this->SetMarker(nh_, VizColor::WHITE, ns, 1.0f, 1.0f, marker);
+        marker.action = Marker::DELETE;
+        delete_markers.markers.push_back(marker);
+    }
+    viz_node_pub_->publish(delete_markers);
+}
+
 void DPVisualizer::VizViewpointExtend(const NavNodePtr& ori_nav_ptr, const Point3D& extend_point) {
     MarkerArray view_extend_marker_array;
     Marker corner_direct_marker, ray_tracing_marker, origin_p_marker, extend_p_marker;

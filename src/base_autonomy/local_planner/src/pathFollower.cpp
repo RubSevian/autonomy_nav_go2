@@ -19,6 +19,8 @@
 #include <std_msgs/msg/bool.hpp>
 #include <nav_msgs/msg/path.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <sensor_msgs/msg/imu.h>
 
 #include "tf2/transform_datatypes.h"
@@ -373,6 +375,9 @@ int main(int argc, char** argv)
   auto subStop = nh->create_subscription<std_msgs::msg::Int8>("/stop", 5, stopHandler);
 
   auto pubSpeed = nh->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel", 5);
+  auto pathFollowerStatusPub = nh->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
+      "/path_follower/status", rclcpp::QoS(1).transient_local());
+  std::string lastPathFollowerStatus;
 
   auto pubGo2Request = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
 
@@ -385,6 +390,33 @@ int main(int argc, char** argv)
     cmd_vel.twist.linear.y = 0.0;
     cmd_vel.twist.angular.z = 0.0;
     pubSpeed->publish(cmd_vel);
+  };
+  const auto publishPathFollowerStatus = [&](const std::string& reason, bool odomFresh, bool pathFresh) {
+    const std::string signature = reason + "|" + (navigationActive ? "1" : "0") + "|" +
+        (odomFresh ? "1" : "0") + "|" + (pathFresh ? "1" : "0") + "|" +
+        (pathInit ? "1" : "0") + "|" + std::to_string(path.poses.size());
+    if (signature == lastPathFollowerStatus) return;
+    lastPathFollowerStatus = signature;
+    diagnostic_msgs::msg::DiagnosticArray array;
+    array.header.stamp = nh->now();
+    diagnostic_msgs::msg::DiagnosticStatus status;
+    status.name = "path_follower"; status.hardware_id = "stage4d";
+    status.level = reason == "TRACKING" ? diagnostic_msgs::msg::DiagnosticStatus::OK
+                                          : diagnostic_msgs::msg::DiagnosticStatus::WARN;
+    status.message = reason;
+    auto add = [&status](const std::string& key, const std::string& value) {
+      diagnostic_msgs::msg::KeyValue kv; kv.key = key; kv.value = value; status.values.push_back(kv);
+    };
+    const auto ageNow = std::chrono::steady_clock::now();
+    const double odomAge = odomReceived ? std::chrono::duration<double>(ageNow - lastOdomReceive).count() : -1.0;
+    const double pathAge = pathReceived ? std::chrono::duration<double>(ageNow - lastPathReceive).count() : -1.0;
+    add("state", reason); add("last_stop_reason", reason); add("navigation_active", navigationActive ? "true" : "false");
+    add("odom_age_sec", odomAge >= 0.0 ? std::to_string(odomAge) : "N/A");
+    add("path_age_sec", pathAge >= 0.0 ? std::to_string(pathAge) : "N/A");
+    add("odom_fresh", odomFresh ? "true" : "false"); add("path_fresh", pathFresh ? "true" : "false");
+    add("path_init", pathInit ? "true" : "false"); add("path_size", std::to_string(path.poses.size()));
+    add("recovery", "new valid /path automatically re-arms tracking; node restart is not required");
+    array.status.push_back(status); pathFollowerStatusPub->publish(array);
   };
 
   if (autonomyMode) {
@@ -407,6 +439,7 @@ int main(int argc, char** argv)
       vehicleSpeed = 0.0F;
       vehicleYawRate = 0.0F;
       publishStop();
+      publishPathFollowerStatus("NAVIGATION_INACTIVE", false, false);
       rate.sleep();
       continue;
     }
@@ -423,6 +456,7 @@ int main(int argc, char** argv)
       vehicleSpeed = 0.0;
       vehicleYawRate = 0.0;
       publishStop();
+      publishPathFollowerStatus(!odomFresh ? "WAITING_FOR_FRESH_ODOMETRY" : "WAITING_FOR_FRESH_PATH", odomFresh, pathFresh);
       RCLCPP_WARN_THROTTLE(nh->get_logger(), *nh->get_clock(), 2000,
         "Navigation stopped: waiting for fresh odometry and path");
       rate.sleep();
@@ -430,6 +464,7 @@ int main(int argc, char** argv)
     }
 
     if (pathInit) {
+      publishPathFollowerStatus("TRACKING", odomFresh, pathFresh);
       float vehicleXRel = cos(vehicleYawRec) * (vehicleX - vehicleXRec) 
                         + sin(vehicleYawRec) * (vehicleY - vehicleYRec);
       float vehicleYRel = -sin(vehicleYawRec) * (vehicleX - vehicleXRec) 

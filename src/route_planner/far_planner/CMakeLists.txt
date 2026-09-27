@@ -73,6 +73,14 @@ target_link_libraries(${PROJECT_NAME} ${PCL_LIBRARIES} ${OpenCV_LIBS})
 
 install(TARGETS ${PROJECT_NAME} DESTINATION lib/${PROJECT_NAME})
 
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(far_path_validation_test tests/path_validation_test.cpp)
+  target_include_directories(far_path_validation_test PRIVATE include ${PCL_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
+  target_link_libraries(far_path_validation_test ${PCL_LIBRARIES})
+  add_test(NAME far_path_validation_test COMMAND far_path_validation_test)
+endif()
+
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})
 
 install(DIRECTORY rviz DESTINATION share/${PROJECT_NAME})
