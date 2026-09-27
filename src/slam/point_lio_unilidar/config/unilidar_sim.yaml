@@ -1,53 +1,56 @@
 /**:
   ros__parameters:
+    # Input transport: these names must match MuJoCo sensor emulation.
     common:
-        lid_topic: "/unilidar/cloud"
-        imu_topic: "/unilidar/imu"
-        con_frame: false
-        con_frame_num: 1
-        cut_frame: false
-        cut_frame_time_interval: 0.1
-        time_lag_imu_to_lidar: 0.0
+        lid_topic: "/unilidar/cloud"       # LiDAR PointCloud2 input.
+        imu_topic: "/unilidar/imu"         # IMU input synchronized by Point-LIO.
+        con_frame: false                    # Accumulate multiple LiDAR frames into one scan.
+        con_frame_num: 1                    # Number of frames when con_frame=true.
+        cut_frame: false                    # Split one scan into fixed time chunks.
+        cut_frame_time_interval: 0.1        # Chunk duration [s] when cut_frame=true.
+        time_lag_imu_to_lidar: 0.0          # IMU timestamp offset relative to LiDAR [s].
+    # Decoder contract for the simulated Unitree L1-like cloud.
     preprocess:
-        lidar_type: 5
-        scan_line: 18
-        timestamp_unit: 0
-        blind: 0.5
+        lidar_type: 5                       # Point-LIO decoder mode for this cloud layout.
+        scan_line: 18                       # Simulated vertical LiDAR channels; must match MuJoCo.
+        timestamp_unit: 0                   # Per-point timestamp unit expected by decoder.
+        blind: 0.5                          # Ignore returns nearer than this range [m].
     mapping:
-        imu_en: true
-        start_in_aggressive_motion: false
-        extrinsic_est_en: false
-        imu_time_inte: 0.004
-        satu_acc: 30.0
-        satu_gyro: 35.0
-        acc_norm: 9.81
-        lidar_meas_cov: 0.01
-        acc_cov_output: 500.0
-        gyr_cov_output: 1000.0
-        b_acc_cov: 0.0001
-        b_gyr_cov: 0.0001
-        imu_meas_acc_cov: 0.1
-        imu_meas_omg_cov: 0.1
-        gyr_cov_input: 0.01
-        acc_cov_input: 0.1
-        plane_thr: 0.1
-        match_s: 81.0
-        fov_degree: 180.0
-        det_range: 100.0
-        gravity_align: true
-        gravity: [0.0, 0.0, -9.810]
-        gravity_init: [0.0, 0.0, -9.810]
-        # LiDAR frame is radar; values are radar pose wrt IMU frame from go2_rars01.xml.
+        imu_en: true                        # Fuse IMU; false disables inertial propagation.
+        start_in_aggressive_motion: false   # Conservative initialization at startup.
+        extrinsic_est_en: false             # Keep fixed measured LiDAR↔IMU transform; do not online-calibrate.
+        imu_time_inte: 0.004                # IMU propagation integration step [s].
+        satu_acc: 30.0                      # Accelerometer saturation threshold.
+        satu_gyro: 35.0                     # Gyroscope saturation threshold.
+        acc_norm: 9.81                      # Expected gravity magnitude [m/s²].
+        lidar_meas_cov: 0.01                # LiDAR residual measurement covariance.
+        acc_cov_output: 500.0               # Published acceleration covariance.
+        gyr_cov_output: 1000.0              # Published gyro covariance.
+        b_acc_cov: 0.0001                   # Accelerometer bias random-walk covariance.
+        b_gyr_cov: 0.0001                   # Gyroscope bias random-walk covariance.
+        imu_meas_acc_cov: 0.1               # Accelerometer measurement covariance.
+        imu_meas_omg_cov: 0.1               # Gyroscope measurement covariance.
+        gyr_cov_input: 0.01                 # Input gyro covariance used by propagation.
+        acc_cov_input: 0.1                  # Input acceleration covariance used by propagation.
+        plane_thr: 0.1                      # Planarity threshold for scan-to-map matching.
+        match_s: 81.0                       # Point-LIO matching/search parameter; retain baseline.
+        fov_degree: 180.0                   # LiDAR horizontal field-of-view used in mapping.
+        det_range: 100.0                    # Maximum mapping/detection range [m].
+        gravity_align: true                 # Align initial map attitude to gravity.
+        gravity: [0.0, 0.0, -9.810]         # World gravity vector [m/s²].
+        gravity_init: [0.0, 0.0, -9.810]    # Initial gravity estimate [m/s²].
+        # FIXED PHYSICAL EXTRINSIC: radar/LiDAR pose with respect to IMU,
+        # derived from go2_rars01.xml.  It is not a navigation clearance knob.
         extrinsic_T: [0.315020, 0.0, -0.089145]
         extrinsic_R: [-0.965513, 0.0, 0.260358,
                       0.0, 1.0, 0.0,
                       -0.260358, 0.0, -0.965513]
     odometry:
-        publish_odometry_without_downsample: true
+        publish_odometry_without_downsample: true  # Publish high-rate odometry.
     publish:
-        path_en: true
-        scan_publish_en: true
-        scan_bodyframe_pub_en: false
+        path_en: true                       # Publish Point-LIO trajectory for RViz/debug.
+        scan_publish_en: true               # Publish registered scan for local/FAR planners.
+        scan_bodyframe_pub_en: false        # Do not additionally publish body-frame scan.
     pcd_save:
-        pcd_save_en: false
-        interval: -1
+        pcd_save_en: false                  # Disk capture of maps/scans; enable only for offline audit.
+        interval: -1                        # Save interval when pcd_save_en=true.

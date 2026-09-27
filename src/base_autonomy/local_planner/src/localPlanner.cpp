@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <chrono>
 #include <iostream>
+#include <algorithm>
+#include <limits>
 #include <string>
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
@@ -19,6 +21,8 @@
 #include <nav_msgs/msg/path.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
@@ -48,8 +52,8 @@ const double PI = 3.1415926;
 #define PLOTPATHSET 1
 
 string pathFolder;
-double vehicleLength = 0.6;
-double vehicleWidth = 0.6;
+double vehicleLength = 0.62;
+double vehicleWidth = 0.40;
 double sensorOffsetX = 0;
 double sensorOffsetY = 0;
 bool twoWayDrive = true;
@@ -163,6 +167,10 @@ struct LocalPlannerStatusData {
 };
 LocalPlannerStatusData localStatus;
 rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr localStatusPub;
+rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr collisionEnvelopePub;
+// Fixed after the immutable baseline path library is read.  This topic is a
+// diagnostic view only; it never feeds path selection.
+int diagnosticStraightPathID = -1;
 std::string lastLocalStatusSignature;
 
 double odomTime = 0;
@@ -587,6 +595,101 @@ void readPathList()
   fclose(filePtr);
 }
 
+
+void publishCollisionEnvelope(float activePathScale)
+{
+  if (!collisionEnvelopePub || diagnosticStraightPathID < 0 ||
+      diagnosticStraightPathID >= pathNum || activePathScale <= 0.0f) {
+    return;
+  }
+
+  visualization_msgs::msg::MarkerArray markers;
+  const auto stamp = nh->now();
+  auto baseMarker = [&](int id, int type, const std::string& ns) {
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = "vehicle";
+    marker.header.stamp = stamp;
+    marker.ns = ns;
+    marker.id = id;
+    marker.type = type;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.pose.orientation.w = 1.0;
+    return marker;
+  };
+
+  // The exact stored candidate centreline, scaled by the same runtime scale
+  // used for collision lookup.  This deliberately does not select or score it.
+  auto centreline = baseMarker(0, visualization_msgs::msg::Marker::LINE_STRIP,
+                               "localplanner_collision_envelope_centerline");
+  centreline.scale.x = 0.018;
+  centreline.color.r = 0.05f;
+  centreline.color.g = 0.95f;
+  centreline.color.b = 0.25f;
+  centreline.color.a = 0.95f;
+  for (const auto& point : paths[diagnosticStraightPathID]->points) {
+    if (point.x < 0.0f || point.x > adjacentRange / activePathScale) continue;
+    geometry_msgs::msg::Point p;
+    p.x = activePathScale * point.x;
+    p.y = activePathScale * point.y;
+    p.z = 0.04;
+    centreline.points.push_back(p);
+  }
+  markers.markers.push_back(centreline);
+
+  // Each point here is the centre of a generated correspondence voxel that
+  // contains this candidate path ID.  These are the cells that increment the
+  // path's blocking counter (once obstacle-height and point-count gates pass).
+  auto cells = baseMarker(1, visualization_msgs::msg::Marker::CUBE_LIST,
+                          "localplanner_collision_envelope_correspondence_cells");
+  cells.scale.x = gridVoxelSize * activePathScale;
+  cells.scale.y = gridVoxelSize * activePathScale;
+  cells.scale.z = 0.012;
+  cells.color.r = 1.0f;
+  cells.color.g = 0.64f;
+  cells.color.b = 0.05f;
+  cells.color.a = 0.22f;
+  for (int indX = 0; indX < gridVoxelNumX; ++indX) {
+    const float x = gridVoxelOffsetX - gridVoxelSize * indX;
+    if (x < 0.0f || x > adjacentRange / activePathScale) continue;
+    const float scaleY = x / gridVoxelOffsetX + searchRadius / gridVoxelOffsetY *
+        (gridVoxelOffsetX - x) / gridVoxelOffsetX;
+    for (int indY = 0; indY < gridVoxelNumY; ++indY) {
+      const int ind = gridVoxelNumY * indX + indY;
+      const auto& candidates = correspondences[ind];
+      if (std::find(candidates.begin(), candidates.end(), diagnosticStraightPathID) == candidates.end()) continue;
+      const float y = scaleY * (gridVoxelOffsetY - gridVoxelSize * indY);
+      geometry_msgs::msg::Point p;
+      p.x = activePathScale * x;
+      p.y = activePathScale * y;
+      p.z = 0.012;
+      cells.points.push_back(p);
+    }
+  }
+  markers.markers.push_back(cells);
+
+  // A simple, legible straight-path bound: source library membership is shown
+  // above; these two lines show the canonical radial search bound scaled into
+  // vehicle metres.  They are annotations, not a rectangle collision model.
+  auto bounds = baseMarker(2, visualization_msgs::msg::Marker::LINE_LIST,
+                           "localplanner_collision_envelope_radial_bound");
+  bounds.scale.x = 0.012;
+  bounds.color.r = 0.95f;
+  bounds.color.g = 0.20f;
+  bounds.color.b = 0.95f;
+  bounds.color.a = 0.90f;
+  const double yBound = searchRadius * activePathScale;
+  const double xBound = adjacentRange;
+  for (double y : {-yBound, yBound}) {
+    geometry_msgs::msg::Point a, b;
+    a.x = 0.0; a.y = y; a.z = 0.05;
+    b.x = xBound; b.y = y; b.z = 0.05;
+    bounds.points.push_back(a);
+    bounds.points.push_back(b);
+  }
+  markers.markers.push_back(bounds);
+  collisionEnvelopePub->publish(markers);
+}
+
 void readCorrespondences()
 {
   string fileName = pathFolder + "/correspondences.txt";
@@ -735,6 +838,8 @@ int main(int argc, char** argv)
   auto pubPath = nh->create_publisher<nav_msgs::msg::Path>("/path", 5);
   localStatusPub = nh->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/local_planner/status", rclcpp::QoS(1).transient_local());
+  collisionEnvelopePub = nh->create_publisher<visualization_msgs::msg::MarkerArray>(
+      "/stage4d/localplanner_collision_envelope", rclcpp::QoS(1).transient_local());
   publishLocalStatus("STARTUP", "STARTUP", "localPlanner initialized; waiting for FAR navigation");
   nav_msgs::msg::Path path;
 
@@ -777,6 +882,19 @@ int main(int argc, char** argv)
   #endif
   readPathList();
   readCorrespondences();
+  // Identify one straight baseline path once.  It is never used in planning;
+  // closest terminal lateral displacement makes the choice deterministic.
+  float bestStraightScore = std::numeric_limits<float>::infinity();
+  for (int pathID = 0; pathID < pathNum; ++pathID) {
+    if (paths[pathID]->points.empty()) continue;
+    const auto& end = paths[pathID]->points.back();
+    const float score = std::fabs(end.y) + 0.001f * std::fabs(end.x - adjacentRange);
+    if (score < bestStraightScore) {
+      bestStraightScore = score;
+      diagnosticStraightPathID = pathID;
+    }
+  }
+  RCLCPP_INFO(nh->get_logger(), "Collision-envelope diagnostic path ID: %d", diagnosticStraightPathID);
 
   RCLCPP_INFO(nh->get_logger(), "Initialization complete.");
 
@@ -924,6 +1042,7 @@ int main(int argc, char** argv)
       while (pathScale >= minPathScale && pathRange >= minPathRange) {
         localStatus.activePathScale = pathScale;
         localStatus.activePathRange = pathRange;
+        publishCollisionEnvelope(pathScale);
         localStatus.candidateTotal = 36 * pathNum;
         localStatus.candidateBlocked = 0;
         localStatus.candidateScored = 0;

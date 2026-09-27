@@ -23,8 +23,12 @@
 
   <node pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
     <param name="pathFolder" value="$(find-pkg-share local_planner)/paths" />
-    <param name="vehicleLength" value="0.3" />
-    <param name="vehicleWidth" value="0.7" />
+    <!-- Go2+RARS01 static collision envelope in vehicle/base frame (m).
+         Length/width are consumed by the rotation-obstacle branch and by the
+         footprint diagnostic.  They are not the translational correspondence
+         radius while checkRotObstacle=false. -->
+    <param name="vehicleLength" value="0.62" />
+    <param name="vehicleWidth" value="0.40" />
     <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
     <param name="sensorOffsetY" value="$(var sensorOffsetY)" />
     <param name="twoWayDrive" value="$(var twoWayDrive)" />
@@ -46,8 +50,11 @@
     <param name="dirWeight" value="0.02" />
     <param name="dirThre" value="90.0" />
     <param name="dirToVehicle" value="false" />
+    <!-- Collision-library scale.  searchRadius(0.55) * 0.75 = 0.4125 m,
+         which covers the 0.369 m static circumscribed robot radius.  Do not
+         fall back to 0.50: its 0.275 m correspondence radius is undersized. -->
     <param name="pathScale" value="0.75" />
-    <param name="minPathScale" value="0.5" />
+    <param name="minPathScale" value="0.75" />
     <param name="pathScaleStep" value="0.25" />
     <param name="pathScaleBySpeed" value="true" />
     <param name="minPathRange" value="1.0" />

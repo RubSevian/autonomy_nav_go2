@@ -1,58 +1,64 @@
 far_planner:
   ros__parameters:
-    # Dynamic Planner Default Params
-    main_run_freq: 5.0
-    voxel_dim: 0.1  # Unit: meter
-    robot_dim: 0.6   # Unit: meter
-    vehicle_height: 0.55  # Unit: meter
-    sensor_range: 8.0  # Unit: meter
-    terrain_range: 6.0   # Unit: meter
-    local_planner_range: 2.5   # Unit: meter
-    visualize_ratio: 0.4
-    is_viewpoint_extend: true
-    is_multi_layer: false
-    is_opencv_visual: false # Obstacle Image Display
-    is_static_env: false
-    is_pub_boundary: false  
-    is_debug_output: false
-    is_attempt_autoswitch: true  # Auto switch to attemptable navigation
-    world_frame: map
+    # Global FAR route planner. It decides whether a route enters a corridor;
+    # localPlanner subsequently checks the immediate collision trajectory.
+    main_run_freq: 5.0                 # Global graph/replan rate [Hz].
+    voxel_dim: 0.1                     # Map voxel edge [m]; also contributes to clearance.
+    # Effective FAR graph clearance is robot_dim / 2 + voxel_dim = 0.40 m.
+    # robot_dim is a FAR disk-like size parameter, NOT the MJCF rectangle width.
+    # It deliberately remains 0.60 m: it yields 0.40 m, matching the static
+    # Go2+RARS01 circumscribed radius 0.369 m with a small voxel margin.
+    robot_dim: 0.6
+    vehicle_height: 0.55               # Height used by terrain/obstacle filtering [m].
+    sensor_range: 8.0                  # Radius of current sensor/map processing [m].
+    terrain_range: 6.0                 # Terrain map radius used by FAR [m].
+    local_planner_range: 2.5           # FAR-to-localPlanner handoff horizon [m].
+    visualize_ratio: 0.4               # RViz thinning ratio; no planning effect.
+    is_viewpoint_extend: true          # Extend graph from current viewpoint.
+    is_multi_layer: false              # Single-layer terrain graph.
+    is_opencv_visual: false            # Disable OpenCV obstacle debug window.
+    is_static_env: false               # Permit dynamic obstacle updates.
+    is_pub_boundary: false             # Do not publish navigation boundary.
+    is_debug_output: false             # FAR internal verbose debug output.
+    is_attempt_autoswitch: true        # Switch to an attemptable route if appropriate.
+    world_frame: map                    # Global planning frame.
 
-    # Graph Messager
-    graph_msger/robot_id: 1  # graph from robot id "0" is extracted from files
+    graph_msger/robot_id: 1            # Graph namespace/robot identifier.
 
-    # Map Handler Params
-    map_handler/floor_height: 2.0    # Unit: meter
-    map_handler/cell_length: 2.5    # Unit: meter
-    map_handler/map_grid_max_length: 200.0  # Unit: meter
-    map_handler/map_grad_max_height: 10.0   # Unit: meter
+    # Coarse persistent map partitioning; these are not robot collision size.
+    map_handler/floor_height: 2.0
+    map_handler/cell_length: 2.5
+    map_handler/map_grid_max_length: 200.0
+    map_handler/map_grad_max_height: 10.0
 
-    # Dynamic Planner Utility Params
-    util/angle_noise: 16.0  # Unit: degree
-    util/accept_max_align_angle: 4.0   # Unit: degree
+    # Utility / obstacle interpretation.
+    util/angle_noise: 16.0             # Directional matching tolerance [deg].
+    util/accept_max_align_angle: 4.0   # Max graph edge alignment error [deg].
+    # Expand obstacle occupancy by one voxel neighbourhood. Independent of
+    # robot_dim/kNavClearDist; do not compensate for it by changing robot size.
     util/obs_inflate_size: 1
-    util/new_intensity_thred: 2.0
-    util/terrain_free_Z: 0.15
-    util/dyosb_update_thred: 4
-    util/new_point_counter: 3
-    util/dynamic_obs_dacay_time: 1.0  # Unit: second
-    util/new_points_decay_time: 1.0   # Unit: second
+    util/new_intensity_thred: 2.0      # New-obstacle intensity threshold.
+    util/terrain_free_Z: 0.15          # Height classified as traversable terrain [m].
+    util/dyosb_update_thred: 4         # Dynamic-obstacle update threshold.
+    util/new_point_counter: 3          # Confirmations before accepting a new point.
+    util/dynamic_obs_dacay_time: 1.0   # Dynamic obstacle expiry [s].
+    util/new_points_decay_time: 1.0    # New-point expiry [s].
 
-    # Dynamic Graph Params
-    graph/connect_votes_size: 5        
+    # Dynamic graph stability / filtering.
+    graph/connect_votes_size: 5
     graph/clear_dumper_thred: 3
     graph/node_finalize_thred: 5
     graph/filter_pool_size: 6
 
-    # Corner Detector Params
+    # Corner/contour extraction parameters.
     c_detector/resize_ratio: 3.0
     c_detector/filter_count_value: 4
     c_detector/is_save_img: false
     c_detector/img_folder_path: /path
 
-    # Graph Planner Params
-    g_planner/converge_distance: 0.25  # Unit: meter
-    g_planner/goal_adjust_radius: 0.8  # Unit: meter
+    # Global route convergence and goal handling.
+    g_planner/converge_distance: 0.25  # Route convergence distance [m].
+    g_planner/goal_adjust_radius: 0.8  # Radius for a reachable adjusted goal [m].
     g_planner/free_counter_thred: 7
     g_planner/reach_goal_vote_size: 3
     g_planner/path_momentum_thred: 3
