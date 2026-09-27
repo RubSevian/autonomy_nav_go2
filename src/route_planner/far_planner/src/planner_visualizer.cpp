@@ -64,7 +64,7 @@ void DPVisualizer::VizPoint3D(const Point3D& point,
 void DPVisualizer::VizPath(const NodePtrStack& global_path, const bool& is_free_nav) {
     Marker path_marker;
     path_marker.type = Marker::LINE_STRIP;
-    const VizColor color = is_free_nav ? VizColor::GREEN : VizColor::BLUE;
+    const VizColor color = is_free_nav ? VizColor::GREEN : VizColor::EMERALD;  // BLUE is reserved for MuJoCo ground truth.
     this->SetMarker(nh_, color, "global_path", 0.75f, 0.9f, path_marker);
     geometry_msgs::msg::Point geo_p;
     for (const auto& node_ptr : global_path) {

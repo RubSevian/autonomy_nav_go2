@@ -195,6 +195,23 @@ void publishLocalStatus(const std::string& state, const std::string& code,
   add("useTerrainAnalysis", useTerrainAnalysis ? "true" : "false");
   add("checkObstacle", checkObstacle ? "true" : "false");
   add("checkRotObstacle", checkRotObstacle ? "true" : "false");
+  // Visualization/diagnostic parameters only.  They document the candidate
+  // correspondence model; they do not alter selection or collision rejection.
+  add("vehicle_length", std::to_string(vehicleLength));
+  add("vehicle_width", std::to_string(vehicleWidth));
+  add("adjacent_range", std::to_string(adjacentRange));
+  add("obstacle_height_threshold", std::to_string(obstacleHeightThre));
+  add("ground_height_threshold", std::to_string(groundHeightThre));
+  add("point_per_path_threshold", std::to_string(pointPerPathThre));
+  add("dir_weight", std::to_string(dirWeight));
+  add("dir_threshold", std::to_string(dirThre));
+  add("base_path_scale", std::to_string(pathScale));
+  add("min_path_scale", std::to_string(minPathScale));
+  add("path_scale_step", std::to_string(pathScaleStep));
+  add("min_path_range", std::to_string(minPathRange));
+  add("path_range_step", std::to_string(pathRangeStep));
+  add("correspondence_search_radius", std::to_string(searchRadius));
+  add("correspondence_voxel_size", std::to_string(gridVoxelSize));
   add("vehicle_x", number(vehicleX, hasOdometry)); add("vehicle_y", number(vehicleY, hasOdometry));
   add("vehicle_yaw", number(vehicleYaw, hasOdometry));
   add("goal_x", number(goalX, hasGoal)); add("goal_y", number(goalY, hasGoal));
