@@ -16,6 +16,28 @@
   <arg name="odomTimeoutSec" default="0.5"/>
   <arg name="pathTimeoutSec" default="0.5"/>
   <arg name="allowStaticPath" default="false"/>
+  <!-- Experimental only. Unset environment preserves the baseline. -->
+  <arg name="enableNarrowPassageMode" default="$(env STAGE4D_NARROW_PASSAGE_MODE false)"/>
+  <arg name="narrowFootprintLength" default="0.62"/>
+  <arg name="narrowFootprintWidth" default="0.40"/>
+  <arg name="narrowLongitudinalMargin" default="0.02"/>
+  <arg name="narrowLateralMargin" default="0.02"/>
+  <arg name="narrowEnterYawToleranceDeg" default="6.0"/>
+  <arg name="narrowContinueYawToleranceDeg" default="9.0"/>
+  <arg name="narrowStopYawToleranceDeg" default="12.0"/>
+  <arg name="narrowRecoveryYawLimitDeg" default="20.0"/>
+  <arg name="narrowSpeedScale" default="0.4"/>
+  <arg name="narrowMaxTangentDeltaDeg" default="12.0"/>
+  <arg name="enableTemporalPathStabilization" default="true"/>
+  <arg name="pathSwitchScoreMargin" default="0.15"/>
+  <arg name="safePathSwitchMinIntervalSec" default="0.50"/>
+  <arg name="followerMotionModel" default="holonomic"/>
+  <arg name="unicycleRotateEnterDeg" default="55.0"/>
+  <arg name="unicycleRotateExitDeg" default="35.0"/>
+  <arg name="unicycleRotateGain" default="1.5"/>
+  <arg name="narrowMaxCurvatureRadPerM" default="1.0"/>
+  <arg name="narrowAlignmentConfirmCycles" default="5"/>
+  <arg name="narrowRealignTimeoutSec" default="2.0"/>
   <!-- Keep original real-robot TF behavior by default. Stage4D may disable
        only a transform that it already publishes authoritatively. -->
   <arg name="publishSensorToVehicleTf" default="true"/>
@@ -29,6 +51,18 @@
          radius while checkRotObstacle=false. -->
     <param name="vehicleLength" value="0.62" />
     <param name="vehicleWidth" value="0.40" />
+    <param name="enableNarrowPassageMode" value="$(var enableNarrowPassageMode)" />
+    <param name="narrowFootprintLength" value="$(var narrowFootprintLength)" />
+    <param name="narrowFootprintWidth" value="$(var narrowFootprintWidth)" />
+    <param name="narrowLongitudinalMargin" value="$(var narrowLongitudinalMargin)" />
+    <param name="narrowLateralMargin" value="$(var narrowLateralMargin)" />
+    <param name="narrowEnterYawToleranceDeg" value="$(var narrowEnterYawToleranceDeg)" />
+    <param name="narrowContinueYawToleranceDeg" value="$(var narrowContinueYawToleranceDeg)" />
+    <param name="narrowStopYawToleranceDeg" value="$(var narrowStopYawToleranceDeg)" />
+    <param name="narrowRecoveryYawLimitDeg" value="$(var narrowRecoveryYawLimitDeg)" />
+    <param name="narrowSpeedScale" value="$(var narrowSpeedScale)" />
+    <param name="narrowMaxTangentDeltaDeg" value="$(var narrowMaxTangentDeltaDeg)" />
+    <param name="narrowMaxCurvatureRadPerM" value="$(var narrowMaxCurvatureRadPerM)" />
     <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
     <param name="sensorOffsetY" value="$(var sensorOffsetY)" />
     <param name="twoWayDrive" value="$(var twoWayDrive)" />
@@ -68,6 +102,9 @@
     <param name="goalClearRange" value="0.5" />
     <param name="goalX" value="$(var goalX)" />
     <param name="goalY" value="$(var goalY)" />
+    <param name="enableTemporalPathStabilization" value="$(var enableTemporalPathStabilization)" />
+    <param name="pathSwitchScoreMargin" value="$(var pathSwitchScoreMargin)" />
+    <param name="safePathSwitchMinIntervalSec" value="$(var safePathSwitchMinIntervalSec)" />
   </node>
 
   <node pkg="local_planner" exec="pathFollower" name="pathFollower" output="screen">
@@ -108,6 +145,13 @@
     <param name="odomTimeoutSec" value="$(var odomTimeoutSec)"/>
     <param name="pathTimeoutSec" value="$(var pathTimeoutSec)"/>
     <param name="allowStaticPath" value="$(var allowStaticPath)"/>
+    <param name="enableNarrowPassageMode" value="$(var enableNarrowPassageMode)"/>
+    <param name="narrowAlignmentConfirmCycles" value="$(var narrowAlignmentConfirmCycles)"/>
+    <param name="narrowRealignTimeoutSec" value="$(var narrowRealignTimeoutSec)"/>
+    <param name="followerMotionModel" value="$(var followerMotionModel)"/>
+    <param name="unicycleRotateEnterDeg" value="$(var unicycleRotateEnterDeg)"/>
+    <param name="unicycleRotateExitDeg" value="$(var unicycleRotateExitDeg)"/>
+    <param name="unicycleRotateGain" value="$(var unicycleRotateGain)"/>
   </node>
 
   <node if="$(var publishSensorToVehicleTf)" pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>

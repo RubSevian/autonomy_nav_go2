@@ -4,6 +4,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
@@ -21,6 +22,9 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
+#include "visibility_graph_msg/msg/local_path_constraint.hpp"
+#include "local_planner/narrow_passage.hpp"
+#include "local_planner/unicycle_follower.hpp"
 #include <sensor_msgs/msg/imu.h>
 
 #include "tf2/transform_datatypes.h"
@@ -89,6 +93,19 @@ bool is_real_robot = false;
 // RL locomotion owns the low-level interface.  Sport Mode must remain off in
 // that configuration, otherwise both controllers command the same robot.
 bool sendSportCommand = false;
+bool enableNarrowPassageMode = false;
+int narrowAlignmentConfirmCycles = 5;
+double narrowRealignTimeoutSec = 2.0;
+std::string followerMotionModel = "holonomic";
+double unicycleRotateEnterDeg = 55.0;
+double unicycleRotateExitDeg = 35.0;
+double unicycleRotateGain = 1.5;
+bool unicycleRotateInPlace = false;
+float lookaheadXBody = 0.0F, lookaheadYBody = 0.0F, lookaheadDistance = 0.0F;
+float purePursuitCurvatureValue = 0.0F, pathTangentHeading = 0.0F, pathHeadingError = 0.0F;
+bool unicycleWzSaturated = false;
+std::uint64_t unicycleRotateEvents = 0;
+double unicycleRotateTimeSec = 0.0;
 
 float joySpeed = 0;
 float joySpeedRaw = 0;
@@ -111,6 +128,7 @@ float vehicleZRec = 0;
 float vehicleRollRec = 0;
 float vehiclePitchRec = 0;
 float vehicleYawRec = 0;
+float pathSourceYaw = 0;  // Pose associated with the most recently accepted vehicle-frame path.
 
 float vehicleYawRate = 0;
 float vehicleSpeed = 0;
@@ -126,11 +144,91 @@ bool navFwd = true;
 double switchTime = 0;
 bool odomReceived = false;
 bool pathReceived = false;
+bool constraintReceived = false;
+bool constraintValid = false;
+bool constraintMatchesPath = false;
+std::uint64_t activePathRevision = 0;
+visibility_graph_msg::msg::LocalPathConstraint latestConstraint;
+float narrowYawError = 0.0F;
+bool narrowHeadingLocked = false;
+double desiredNarrowHeading = 0.0;
+double lockedNarrowHeading = 0.0;
+float narrowApproachX = 0.0F;
+float narrowApproachY = 0.0F;
+int selectedNarrowDirection = 0;  // +1 forward through lane, -1 backward.
+std::string lastNarrowStateTransition = "NONE";
+std::uint64_t narrowStateTransitions = 0;
+bool trackedCandidateValid = false;
+int trackedCandidateGroupID = -1;
+int trackedCandidateRotationID = -1;
+int trackedCandidateDirection = 0;
+bool trackedCandidateNarrowMode = false;
+std::uint64_t followerPathSwitchCount = 0;
+std::uint64_t followerPathRefreshCount = 0;
+std::string followerPathUpdateReason = "INITIAL";
+std::uint64_t alignmentEntries = 0;
+std::uint64_t alignmentSuccesses = 0;
+std::uint64_t realignEvents = 0;
+std::uint64_t alignmentTimeouts = 0;
+float maxNarrowYawError = 0.0F;
 std::chrono::steady_clock::time_point lastOdomReceive;
 std::chrono::steady_clock::time_point lastPathReceive;
 
 nav_msgs::msg::Path path;
 rclcpp::Node::SharedPtr nh;
+
+void resetNarrowHeadingLock() {
+  narrowHeadingLocked = false;
+  desiredNarrowHeading = 0.0;
+  lockedNarrowHeading = 0.0;
+  narrowApproachX = 0.0F;
+  narrowApproachY = 0.0F;
+  selectedNarrowDirection = 0;
+}
+
+local_planner::StampKey stampKey(const builtin_interfaces::msg::Time& stamp) {
+  return {stamp.sec, stamp.nanosec};
+}
+
+void refreshConstraintMatch() {
+  constraintMatchesPath = false;
+  if (!pathReceived || !constraintReceived || !constraintValid) return;
+  const auto pathStamp = stampKey(path.header.stamp);
+  const auto constraintStamp = stampKey(latestConstraint.header.stamp);
+  if (local_planner::matchingConstraint(pathStamp, constraintStamp,
+                                        latestConstraint.path_revision,
+                                        activePathRevision)) {
+    activePathRevision = latestConstraint.path_revision;
+    constraintMatchesPath = true;
+  } else if (pathStamp.sec == constraintStamp.sec &&
+             pathStamp.nanosec == constraintStamp.nanosec &&
+             activePathRevision == latestConstraint.path_revision) {
+    constraintMatchesPath = true;
+  }
+}
+
+void applyConstraint(
+    const visibility_graph_msg::msg::LocalPathConstraint::ConstSharedPtr message) {
+  if (constraintReceived && message->path_revision < latestConstraint.path_revision) return;
+  latestConstraint = *message;
+  constraintReceived = true;
+  constraintValid = !message->requires_alignment ||
+      (std::isfinite(message->enter_yaw_tolerance) &&
+       std::isfinite(message->continue_yaw_tolerance) &&
+       std::isfinite(message->stop_yaw_tolerance) &&
+       std::isfinite(message->recovery_yaw_limit) &&
+       std::isfinite(message->speed_scale) &&
+       std::isfinite(message->narrow_approach_x) &&
+       std::isfinite(message->narrow_approach_y) &&
+       std::isfinite(message->narrow_approach_heading) &&
+       message->enter_yaw_tolerance > 0.0F &&
+       message->enter_yaw_tolerance < message->continue_yaw_tolerance &&
+       message->continue_yaw_tolerance < message->stop_yaw_tolerance &&
+       message->stop_yaw_tolerance < message->recovery_yaw_limit &&
+       message->recovery_yaw_limit <= PI / 4.0 &&
+       message->speed_scale > 0.0F && message->speed_scale <= 1.0F);
+  refreshConstraintMatch();
+}
 
 unitree_api::msg::Request req;
 SportClient sport_req;
@@ -171,66 +269,158 @@ void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
   }
 }
 
-void pathHandler(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
+void applyPath(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
 {
   if (!navigationActive) return;
   if (pathIn->header.frame_id != "vehicle" && pathIn->header.frame_id != "/vehicle") {
     RCLCPP_WARN(nh->get_logger(), "Rejecting path with unexpected frame '%s'",
                 pathIn->header.frame_id.c_str());
-    path.poses.clear();
-    pathReceived = false;
-    pathInit = false;
-    vehicleSpeed = 0.0F;
-    vehicleYawRate = 0.0F;
+    path.poses.clear(); pathReceived = false; pathInit = false;
+    vehicleSpeed = 0.0F; vehicleYawRate = 0.0F;
     return;
   }
-  int pathSize = pathIn->poses.size();
+  const int pathSize = pathIn->poses.size();
   lastPathReceive = std::chrono::steady_clock::now();
   pathReceived = pathSize > 0;
-  if (!pathReceived) {
-    path.poses.clear();
-    pathInit = false;
-    return;
-  }
+  if (!pathReceived) { path.poses.clear(); pathInit = false; return; }
   for (const auto& pose : pathIn->poses) {
     if (!std::isfinite(pose.pose.position.x) || !std::isfinite(pose.pose.position.y) ||
         !std::isfinite(pose.pose.position.z)) {
       RCLCPP_WARN(nh->get_logger(), "Rejecting path with non-finite position");
-      path.poses.clear();
-      pathReceived = false;
-      pathInit = false;
-      vehicleSpeed = 0.0F;
-      vehicleYawRate = 0.0F;
+      path.poses.clear(); pathReceived = false; pathInit = false;
+      vehicleSpeed = 0.0F; vehicleYawRate = 0.0F;
       return;
     }
   }
+
+  pathSourceYaw = vehicleYaw;
+  const auto incomingStamp = stampKey(pathIn->header.stamp);
+  const auto constraintStamp = stampKey(latestConstraint.header.stamp);
+  const bool incomingConstraintMatches = constraintReceived && constraintValid &&
+      incomingStamp.sec == constraintStamp.sec && incomingStamp.nanosec == constraintStamp.nanosec;
+  const bool equivalentRefresh = incomingConstraintMatches && pathInit && trackedCandidateValid &&
+      latestConstraint.candidate_group_id == trackedCandidateGroupID &&
+      latestConstraint.candidate_rotation_id == trackedCandidateRotationID &&
+      latestConstraint.candidate_direction == trackedCandidateDirection &&
+      latestConstraint.candidate_narrow_mode == trackedCandidateNarrowMode;
+
+  path.header = pathIn->header;
   path.poses.resize(pathSize);
-  for (int i = 0; i < pathSize; i++) {
-    path.poses[i].pose.position.x = pathIn->poses[i].pose.position.x;
-    path.poses[i].pose.position.y = pathIn->poses[i].pose.position.y;
-    path.poses[i].pose.position.z = pathIn->poses[i].pose.position.z;
+  for (int i = 0; i < pathSize; ++i) {
+    path.poses[i] = pathIn->poses[i];
+    if (equivalentRefresh) {
+      // Refresh coordinates are expressed in the current vehicle frame.
+      const double worldX = vehicleX + std::cos(vehicleYaw) * pathIn->poses[i].pose.position.x -
+          std::sin(vehicleYaw) * pathIn->poses[i].pose.position.y;
+      const double worldY = vehicleY + std::sin(vehicleYaw) * pathIn->poses[i].pose.position.x +
+          std::cos(vehicleYaw) * pathIn->poses[i].pose.position.y;
+      const double dx = worldX - vehicleXRec;
+      const double dy = worldY - vehicleYRec;
+      path.poses[i].pose.position.x = std::cos(vehicleYawRec) * dx + std::sin(vehicleYawRec) * dy;
+      path.poses[i].pose.position.y = -std::sin(vehicleYawRec) * dx + std::cos(vehicleYawRec) * dy;
+    }
   }
 
-  vehicleXRec = vehicleX;
-  vehicleYRec = vehicleY;
-  vehicleZRec = vehicleZ;
-  vehicleRollRec = vehicleRoll;
-  vehiclePitchRec = vehiclePitch;
-  vehicleYawRec = vehicleYaw;
-
-  pathPointID = 0;
+  if (incomingConstraintMatches) {
+    if (equivalentRefresh) {
+      ++followerPathRefreshCount;
+      followerPathUpdateReason = "REFRESH_SAME_CANDIDATE";
+      // Fresh samples start at the robot; an old index skips the checked near segment.
+      pathPointID = 0;
+      double closestDistance = std::numeric_limits<double>::infinity();
+      const double robotX = std::cos(vehicleYawRec) * (vehicleX - vehicleXRec) +
+          std::sin(vehicleYawRec) * (vehicleY - vehicleYRec);
+      const double robotY = -std::sin(vehicleYawRec) * (vehicleX - vehicleXRec) +
+          std::cos(vehicleYawRec) * (vehicleY - vehicleYRec);
+      for (int i = 0; i < pathSize; ++i) {
+        const auto& point = path.poses[i].pose.position;
+        const double distance = std::hypot(point.x - robotX, point.y - robotY);
+        if (distance < closestDistance) {
+          closestDistance = distance;
+          pathPointID = i;
+        }
+      }
+    } else {
+      if (trackedCandidateValid) ++followerPathSwitchCount;
+      followerPathUpdateReason = latestConstraint.switch_reason;
+      vehicleXRec = vehicleX; vehicleYRec = vehicleY; vehicleZRec = vehicleZ;
+      vehicleRollRec = vehicleRoll; vehiclePitchRec = vehiclePitch; vehicleYawRec = vehicleYaw;
+      pathPointID = 0;
+    }
+    trackedCandidateValid = latestConstraint.candidate_group_id >= 0;
+    trackedCandidateGroupID = latestConstraint.candidate_group_id;
+    trackedCandidateRotationID = latestConstraint.candidate_rotation_id;
+    trackedCandidateDirection = latestConstraint.candidate_direction;
+    trackedCandidateNarrowMode = latestConstraint.candidate_narrow_mode;
+  } else {
+    // A new candidate is never followed with an old reference. The constraint
+    // is published first by localPlanner, so normal refreshes take the branch above.
+    if (trackedCandidateValid) ++followerPathSwitchCount;
+    followerPathUpdateReason = "WAITING_FOR_PAIRED_CONSTRAINT";
+    vehicleXRec = vehicleX; vehicleYRec = vehicleY; vehicleZRec = vehicleZ;
+    vehicleRollRec = vehicleRoll; vehiclePitchRec = vehiclePitch; vehicleYawRec = vehicleYaw;
+    pathPointID = 0;
+  }
   pathInit = true;
+  if (enableNarrowPassageMode) refreshConstraintMatch();
+}
+
+visibility_graph_msg::msg::LocalPathConstraint::ConstSharedPtr pendingConstraint;
+nav_msgs::msg::Path::ConstSharedPtr pendingPath;
+
+void applyPendingRoute() {
+  if (!pendingPath || !pendingConstraint) return;
+  const auto& a = pendingPath->header.stamp;
+  const auto& b = pendingConstraint->header.stamp;
+  if (a.sec != b.sec || a.nanosec != b.nanosec) return;
+  applyConstraint(pendingConstraint);
+  applyPath(pendingPath);
+  pendingPath.reset();
+  pendingConstraint.reset();
+}
+
+void constraintHandler(
+    const visibility_graph_msg::msg::LocalPathConstraint::ConstSharedPtr message) {
+  if (constraintReceived && message->path_revision < latestConstraint.path_revision) return;
+  pendingConstraint = message;
+  applyPendingRoute();
+}
+
+void pathHandler(const nav_msgs::msg::Path::ConstSharedPtr message) {
+  if (!navigationActive) return;
+  // Revocations and invalid frames take effect without waiting for metadata.
+  if (message->poses.size() <= 1 ||
+      (message->header.frame_id != "vehicle" && message->header.frame_id != "/vehicle")) {
+    pendingPath.reset();
+    applyPath(message);
+    return;
+  }
+  if (!enableNarrowPassageMode && !constraintReceived && !pendingConstraint) {
+    applyPath(message);  // Legacy producers may not publish constraints.
+    return;
+  }
+  pendingPath = message;
+  applyPendingRoute();
 }
 
 void navigationActiveHandler(const std_msgs::msg::Bool::ConstSharedPtr active)
 {
   navigationActive = active->data;
   if (!navigationActive) {
+    pendingPath.reset();
+    pendingConstraint.reset();
     path.poses.clear();
     pathInit = false;
     pathReceived = false;
+    constraintMatchesPath = false;
     vehicleSpeed = 0.0F;
     vehicleYawRate = 0.0F;
+    resetNarrowHeadingLock();
+    trackedCandidateValid = false;
+    trackedCandidateGroupID = -1;
+    trackedCandidateRotationID = -1;
+    trackedCandidateDirection = 0;
+    trackedCandidateNarrowMode = false;
   }
 }
 
@@ -323,6 +513,13 @@ int main(int argc, char** argv)
   nh->declare_parameter<bool>("allowStaticPath", allowStaticPath);
   nh->declare_parameter<bool>("is_real_robot", is_real_robot);
   nh->declare_parameter<bool>("sendSportCommand", sendSportCommand);
+  nh->declare_parameter<bool>("enableNarrowPassageMode", enableNarrowPassageMode);
+  nh->declare_parameter<int>("narrowAlignmentConfirmCycles", narrowAlignmentConfirmCycles);
+  nh->declare_parameter<double>("narrowRealignTimeoutSec", narrowRealignTimeoutSec);
+  nh->declare_parameter<std::string>("followerMotionModel", followerMotionModel);
+  nh->declare_parameter<double>("unicycleRotateEnterDeg", unicycleRotateEnterDeg);
+  nh->declare_parameter<double>("unicycleRotateExitDeg", unicycleRotateExitDeg);
+  nh->declare_parameter<double>("unicycleRotateGain", unicycleRotateGain);
 
   nh->get_parameter("sensorOffsetX", sensorOffsetX);
   nh->get_parameter("sensorOffsetY", sensorOffsetY);
@@ -360,10 +557,35 @@ int main(int argc, char** argv)
   nh->get_parameter("allowStaticPath", allowStaticPath);
   nh->get_parameter("is_real_robot", is_real_robot);
   nh->get_parameter("sendSportCommand", sendSportCommand);
+  nh->get_parameter("enableNarrowPassageMode", enableNarrowPassageMode);
+  nh->get_parameter("narrowAlignmentConfirmCycles", narrowAlignmentConfirmCycles);
+  nh->get_parameter("narrowRealignTimeoutSec", narrowRealignTimeoutSec);
+  nh->get_parameter("followerMotionModel", followerMotionModel);
+  nh->get_parameter("unicycleRotateEnterDeg", unicycleRotateEnterDeg);
+  nh->get_parameter("unicycleRotateExitDeg", unicycleRotateExitDeg);
+  nh->get_parameter("unicycleRotateGain", unicycleRotateGain);
+  if (!local_planner::validMotionModel(followerMotionModel) ||
+      !std::isfinite(unicycleRotateEnterDeg) || !std::isfinite(unicycleRotateExitDeg) ||
+      !std::isfinite(unicycleRotateGain) || unicycleRotateExitDeg <= 0.0 ||
+      unicycleRotateEnterDeg <= unicycleRotateExitDeg || unicycleRotateGain <= 0.0) {
+    RCLCPP_FATAL(nh->get_logger(), "Invalid unicycle follower configuration");
+    rclcpp::shutdown();
+    return 1;
+  }
+
+  if (enableNarrowPassageMode &&
+      (narrowAlignmentConfirmCycles < 1 || narrowRealignTimeoutSec <= 0.0 ||
+       !std::isfinite(narrowRealignTimeoutSec))) {
+    RCLCPP_FATAL(nh->get_logger(), "Invalid narrow-passage follower configuration");
+    rclcpp::shutdown();
+    return 1;
+  }
 
   auto subOdom = nh->create_subscription<nav_msgs::msg::Odometry>("/state_estimation", 5, odomHandler);
 
   auto subPath = nh->create_subscription<nav_msgs::msg::Path>("/path", 5, pathHandler);
+  auto subPathConstraint = nh->create_subscription<visibility_graph_msg::msg::LocalPathConstraint>(
+      "/local_path_constraint", rclcpp::QoS(5).transient_local(), constraintHandler);
 
   auto subNavigationActive = nh->create_subscription<std_msgs::msg::Bool>(
       "/navigation_active", rclcpp::QoS(1).transient_local(), navigationActiveHandler);
@@ -378,7 +600,32 @@ int main(int argc, char** argv)
   auto pathFollowerStatusPub = nh->create_publisher<diagnostic_msgs::msg::DiagnosticArray>(
       "/path_follower/status", rclcpp::QoS(1).transient_local());
   std::string lastPathFollowerStatus;
+  local_planner::NarrowStateMachine narrowMachine(
+      6.0 * PI / 180.0, 9.0 * PI / 180.0, 12.0 * PI / 180.0,
+      narrowAlignmentConfirmCycles, narrowRealignTimeoutSec);
+  local_planner::RotateInPlaceHysteresis unicycleRotateState(
+      unicycleRotateEnterDeg * PI / 180.0, unicycleRotateExitDeg * PI / 180.0);
 
+  // Only the feature gate is dynamic. Numerical tuning remains a launch-time
+  // configuration so one A/B run has fixed controller parameters.
+  auto motionModelCallback = nh->add_on_set_parameters_callback(
+      [&](const std::vector<rclcpp::Parameter>& parameters) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        for (const auto& parameter : parameters) {
+          if (parameter.get_name() == "followerMotionModel") {
+            const auto requested = parameter.as_string();
+            if (!local_planner::validMotionModel(requested)) {
+              result.successful = false;
+              result.reason = "followerMotionModel must be holonomic or unicycle";
+              return result;
+            }
+            followerMotionModel = requested;
+            unicycleRotateInPlace = false;
+          }
+        }
+        return result;
+      });
   auto pubGo2Request = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
 
   geometry_msgs::msg::TwistStamped cmd_vel;
@@ -390,11 +637,26 @@ int main(int argc, char** argv)
     cmd_vel.twist.linear.y = 0.0;
     cmd_vel.twist.angular.z = 0.0;
     pubSpeed->publish(cmd_vel);
+    if (enableNarrowPassageMode && is_real_robot && sendSportCommand) {
+      sport_req.StopMove(req);
+      pubGo2Request->publish(req);
+    }
   };
   const auto publishPathFollowerStatus = [&](const std::string& reason, bool odomFresh, bool pathFresh) {
     const std::string signature = reason + "|" + (navigationActive ? "1" : "0") + "|" +
         (odomFresh ? "1" : "0") + "|" + (pathFresh ? "1" : "0") + "|" +
-        (pathInit ? "1" : "0") + "|" + std::to_string(path.poses.size());
+        (pathInit ? "1" : "0") + "|" + std::to_string(path.poses.size()) +
+        (enableNarrowPassageMode ?
+         "|" + std::string(local_planner::narrowStateName(narrowMachine.state())) +
+         "|" + std::to_string(activePathRevision) +
+         "|" + (constraintMatchesPath ? "1" : "0") +
+         "|" + std::to_string(static_cast<int>(std::round(narrowYawError * 100.0F))) +
+         "|" + std::to_string(selectedNarrowDirection) +
+         "|" + std::to_string(narrowStateTransitions) : "") +
+        "|" + followerMotionModel + "|" +
+        std::to_string(static_cast<int>(std::round(purePursuitCurvatureValue * 100.0F))) + "|" +
+        (unicycleRotateInPlace ? "1" : "0") + "|" +
+        std::to_string(followerPathSwitchCount) + "|" + std::to_string(followerPathRefreshCount);
     if (signature == lastPathFollowerStatus) return;
     lastPathFollowerStatus = signature;
     diagnostic_msgs::msg::DiagnosticArray array;
@@ -407,8 +669,36 @@ int main(int argc, char** argv)
     auto add = [&status](const std::string& key, const std::string& value) {
       diagnostic_msgs::msg::KeyValue kv; kv.key = key; kv.value = value; status.values.push_back(kv);
     };
+    add("motion_model", followerMotionModel);
+    add("tracking_point_index", std::to_string(pathPointID));
+    add("controller_state", followerMotionModel == "unicycle" ?
+        (unicycleRotateInPlace ? "UNICYCLE_ROTATE_IN_PLACE" : "UNICYCLE_PURE_PURSUIT") : "HOLONOMIC");
+    add("lookahead_x_body", std::to_string(lookaheadXBody));
+    add("lookahead_y_body", std::to_string(lookaheadYBody));
+    add("lookahead_distance", std::to_string(lookaheadDistance));
+    add("pure_pursuit_curvature", std::to_string(purePursuitCurvatureValue));
+    add("path_tangent_heading", std::to_string(pathTangentHeading));
+    add("heading_error", std::to_string(pathHeadingError));
+    add("command_v", std::to_string(vehicleSpeed));
+    add("command_vy", followerMotionModel == "unicycle" ? "0.000000" : "N/A");
+    add("command_wz", std::to_string(vehicleYawRate));
+    add("rotate_in_place_active", unicycleRotateInPlace ? "true" : "false");
+    add("wz_saturated", unicycleWzSaturated ? "true" : "false");
+    add("rotate_in_place_events", std::to_string(unicycleRotateEvents));
+    add("rotate_in_place_time_sec", std::to_string(unicycleRotateTimeSec));
     const auto ageNow = std::chrono::steady_clock::now();
     const double odomAge = odomReceived ? std::chrono::duration<double>(ageNow - lastOdomReceive).count() : -1.0;
+    add("candidate_id", constraintReceived ?
+        std::to_string(latestConstraint.candidate_group_id) + ":" +
+        std::to_string(latestConstraint.candidate_rotation_id) + ":" +
+        std::to_string(latestConstraint.candidate_direction) + ":" +
+        (latestConstraint.candidate_narrow_mode ? "NARROW" : "NORMAL") : "N/A");
+    add("current_score", constraintReceived ? std::to_string(latestConstraint.current_score) : "N/A");
+    add("best_score", constraintReceived ? std::to_string(latestConstraint.best_score) : "N/A");
+    add("switch_reason", constraintReceived ? latestConstraint.switch_reason : "N/A");
+    add("path_switch_count", std::to_string(followerPathSwitchCount));
+    add("path_refresh_count", std::to_string(followerPathRefreshCount));
+    add("path_update_reason", followerPathUpdateReason);
     const double pathAge = pathReceived ? std::chrono::duration<double>(ageNow - lastPathReceive).count() : -1.0;
     add("state", reason); add("last_stop_reason", reason); add("navigation_active", navigationActive ? "true" : "false");
     add("odom_age_sec", odomAge >= 0.0 ? std::to_string(odomAge) : "N/A");
@@ -416,6 +706,35 @@ int main(int argc, char** argv)
     add("odom_fresh", odomFresh ? "true" : "false"); add("path_fresh", pathFresh ? "true" : "false");
     add("path_init", pathInit ? "true" : "false"); add("path_size", std::to_string(path.poses.size()));
     add("recovery", "new valid /path automatically re-arms tracking; node restart is not required");
+    add("narrow_state", local_planner::narrowStateName(narrowMachine.state()));
+    add("path_revision", std::to_string(activePathRevision));
+    add("constraint_revision", constraintReceived ?
+        std::to_string(latestConstraint.path_revision) : "N/A");
+    add("narrow_heading_locked", narrowHeadingLocked ? "true" : "false");
+    add("narrow_approach_x_vehicle", narrowHeadingLocked ? std::to_string(narrowApproachX) : "N/A");
+    add("narrow_approach_y_vehicle", narrowHeadingLocked ? std::to_string(narrowApproachY) : "N/A");
+    add("desired_narrow_heading", narrowHeadingLocked ? std::to_string(desiredNarrowHeading) : "N/A");
+    add("locked_narrow_heading", narrowHeadingLocked ? std::to_string(lockedNarrowHeading) : "N/A");
+    add("locked_narrow_yaw_error", narrowHeadingLocked ? std::to_string(narrowYawError) : "N/A");
+    add("selected_narrow_direction", selectedNarrowDirection > 0 ? "FORWARD" :
+        (selectedNarrowDirection < 0 ? "BACKWARD" : "UNLOCKED"));
+    add("narrow_state_transition", lastNarrowStateTransition);
+    add("narrow_state_transition_count", std::to_string(narrowStateTransitions));
+    add("constraint_matches_path", constraintMatchesPath ? "true" : "false");
+    add("yaw_error", std::to_string(narrowYawError));
+    add("enter_tolerance", constraintReceived ?
+        std::to_string(latestConstraint.enter_yaw_tolerance) : "N/A");
+    add("continue_tolerance", constraintReceived ?
+        std::to_string(latestConstraint.continue_yaw_tolerance) : "N/A");
+    add("stop_tolerance", constraintReceived ?
+        std::to_string(latestConstraint.stop_yaw_tolerance) : "N/A");
+    add("speed_scale", constraintReceived ?
+        std::to_string(latestConstraint.speed_scale) : "N/A");
+    add("alignment_entries", std::to_string(alignmentEntries));
+    add("alignment_successes", std::to_string(alignmentSuccesses));
+    add("realign_events", std::to_string(realignEvents));
+    add("alignment_timeouts", std::to_string(alignmentTimeouts));
+    add("max_narrow_yaw_error", std::to_string(maxNarrowYawError));
     array.status.push_back(status); pathFollowerStatusPub->publish(array);
   };
 
@@ -436,6 +755,8 @@ int main(int argc, char** argv)
     rclcpp::spin_some(nh);
 
     if (!navigationActive) {
+      narrowMachine.reset();
+      resetNarrowHeadingLock();
       vehicleSpeed = 0.0F;
       vehicleYawRate = 0.0F;
       publishStop();
@@ -453,6 +774,8 @@ int main(int argc, char** argv)
       // A route must be produced again after a stale input.  This prevents
       // resuming an old trajectory when mapping or planning returns.
       pathInit = false;
+      narrowMachine.reset();
+      resetNarrowHeadingLock();
       vehicleSpeed = 0.0;
       vehicleYawRate = 0.0;
       publishStop();
@@ -463,8 +786,38 @@ int main(int argc, char** argv)
       continue;
     }
 
+    // A singleton revokes the route: stop immediately, without a speed ramp.
+    if (path.poses.size() <= 1) {
+      vehicleSpeed = 0.0F;
+      vehicleYawRate = 0.0F;
+      narrowMachine.reset();
+      resetNarrowHeadingLock();
+      publishStop();
+      publishPathFollowerStatus("PLANNER_STOP_PATH", odomFresh, pathFresh);
+      rate.sleep();
+      continue;
+    }
+
+    if (enableNarrowPassageMode && !constraintMatchesPath) {
+      narrowMachine.reset();
+      resetNarrowHeadingLock();
+      vehicleSpeed = 0.0F;
+      vehicleYawRate = 0.0F;
+      publishStop();
+      publishPathFollowerStatus("WAITING_FOR_MATCHING_CONSTRAINT", odomFresh, pathFresh);
+      rate.sleep();
+      continue;
+    }
+
     if (pathInit) {
-      publishPathFollowerStatus("TRACKING", odomFresh, pathFresh);
+      if (!enableNarrowPassageMode) publishPathFollowerStatus("TRACKING", odomFresh, pathFresh);
+      const bool narrowRequired = enableNarrowPassageMode && latestConstraint.requires_alignment;
+      if (narrowRequired) {
+        narrowMachine.configure(latestConstraint.enter_yaw_tolerance,
+            latestConstraint.continue_yaw_tolerance,
+            latestConstraint.stop_yaw_tolerance,
+            narrowAlignmentConfirmCycles, narrowRealignTimeoutSec);
+      }
       float vehicleXRel = cos(vehicleYawRec) * (vehicleX - vehicleXRec) 
                         + sin(vehicleYawRec) * (vehicleY - vehicleYRec);
       float vehicleYRel = -sin(vehicleYawRec) * (vehicleX - vehicleXRec) 
@@ -476,11 +829,12 @@ int main(int argc, char** argv)
       float endDis = sqrt(endDisX * endDisX + endDisY * endDisY);
 
       float disX, disY, dis;
+      const float activeLookAhead = narrowRequired ? 0.15F : lookAheadDis;
       while (pathPointID < pathSize - 1) {
         disX = path.poses[pathPointID].pose.position.x - vehicleXRel;
         disY = path.poses[pathPointID].pose.position.y - vehicleYRel;
         dis = sqrt(disX * disX + disY * disY);
-        if (dis < lookAheadDis) {
+        if (dis < activeLookAhead) {
           pathPointID++;
         } else {
           break;
@@ -498,7 +852,7 @@ int main(int argc, char** argv)
       if (dirDiff > PI) dirDiff -= 2 * PI;
       else if (dirDiff < -PI) dirDiff += 2 * PI;
 
-      if (twoWayDrive) {
+      if (twoWayDrive && !narrowRequired && followerMotionModel == "holonomic") {
         double time = nh->now().seconds();
         if (fabs(dirDiff) > PI / 2 && navFwd && time - switchTime > switchTimeThre) {
           navFwd = false;
@@ -510,7 +864,7 @@ int main(int argc, char** argv)
       }
 
       float joySpeed2 = maxSpeed * joySpeed;
-      if (!navFwd) {
+      if (!navFwd && !narrowRequired && followerMotionModel == "holonomic") {
         dirDiff += PI;
         if (dirDiff > PI) dirDiff -= 2 * PI;
         joySpeed2 *= -1;
@@ -544,9 +898,100 @@ int main(int argc, char** argv)
           (dis < goalCloseDis && fabs(dirDiff) < omniDirDiffThre)) &&
          dis > stopDisThre) ? joySpeed3 : 0.0F;
       const float speedDelta = targetSpeed - vehicleSpeed;
-      vehicleSpeed += std::max(-maxSpeedStep, std::min(speedDelta, maxSpeedStep));
+      if (!narrowRequired && followerMotionModel == "holonomic") {
+        vehicleSpeed += std::max(-maxSpeedStep, std::min(speedDelta, maxSpeedStep));
+      }
 
       if (fabs(vehicleSpeed) > noRotSpeed) vehicleYawRate = 0;
+      if (followerMotionModel == "unicycle" && !narrowRequired) {
+        const double theta = vehicleYaw - vehicleYawRec;
+        const auto bodyTarget = local_planner::targetInCurrentBody(disX, disY, theta);
+        lookaheadXBody = static_cast<float>(bodyTarget.x);
+        lookaheadYBody = static_cast<float>(bodyTarget.y);
+        lookaheadDistance = static_cast<float>(std::hypot(bodyTarget.x, bodyTarget.y));
+        const int tangentBefore = std::max(0, pathPointID - 1);
+        const int tangentAfter = std::min(pathSize - 1, pathPointID + 1);
+        const auto& tangentStart = path.poses[tangentBefore].pose.position;
+        const auto& tangentEnd = path.poses[tangentAfter].pose.position;
+        pathTangentHeading = static_cast<float>(std::atan2(
+            tangentEnd.y - tangentStart.y, tangentEnd.x - tangentStart.x));
+        pathHeadingError = static_cast<float>(local_planner::wrapAngle(pathTangentHeading - theta));
+        const bool wasRotating = unicycleRotateState.active();
+        unicycleRotateInPlace = unicycleRotateState.update(pathHeadingError) || bodyTarget.x <= 0.0;
+        if (!wasRotating && unicycleRotateInPlace) ++unicycleRotateEvents;
+        if (unicycleRotateInPlace) unicycleRotateTimeSec += controlDt;
+        const float unicycleTarget = (!unicycleRotateInPlace && pathSize > 1 &&
+            endDis > stopDisThre) ? std::max(0.0F, joySpeed3) : 0.0F;
+        vehicleSpeed += std::max(-maxSpeedStep, std::min(unicycleTarget - vehicleSpeed, maxSpeedStep));
+        vehicleSpeed = std::max(0.0F, vehicleSpeed);
+        const auto unicycleCommand = local_planner::makeUnicycleCommand(
+            vehicleSpeed, bodyTarget, pathHeadingError, unicycleRotateInPlace,
+            unicycleRotateGain, maxYawRate * PI / 180.0);
+        purePursuitCurvatureValue = static_cast<float>(local_planner::purePursuitCurvature(bodyTarget));
+        vehicleYawRate = static_cast<float>(unicycleCommand.wz);
+        unicycleWzSaturated = unicycleCommand.saturated;
+      }
+
+
+      if (narrowRequired) {
+        // The planner supplies a fixed pre-entry tangent. At narrow-section
+        // entry choose psi or psi+pi once; no rolling lookahead may replace
+        // that target while this section is active.
+        if (!narrowHeadingLocked) {
+          desiredNarrowHeading = local_planner::wrapAngle(
+              pathSourceYaw + latestConstraint.narrow_approach_heading);
+          const auto lock = local_planner::chooseNarrowHeading(
+              desiredNarrowHeading, vehicleYaw);
+          lockedNarrowHeading = lock.heading;
+          selectedNarrowDirection = lock.direction;
+          narrowApproachX = latestConstraint.narrow_approach_x;
+          narrowApproachY = latestConstraint.narrow_approach_y;
+          narrowHeadingLocked = true;
+          lastNarrowStateTransition = "LOCKED_HEADING";
+        }
+        narrowYawError = static_cast<float>(local_planner::wrapAngle(
+            vehicleYaw - lockedNarrowHeading));
+        const auto before = narrowMachine.state();
+        const auto after = narrowMachine.step(true, true, narrowYawError, controlDt);
+        if (after != before) {
+          lastNarrowStateTransition = std::string(local_planner::narrowStateName(before)) +
+              "->" + local_planner::narrowStateName(after);
+          ++narrowStateTransitions;
+          if (after == local_planner::NarrowState::NARROW_APPROACH) {
+            ++alignmentEntries;
+            if (before == local_planner::NarrowState::NARROW_TRAVERSE) ++realignEvents;
+          }
+          if (after == local_planner::NarrowState::NARROW_TRAVERSE) ++alignmentSuccesses;
+          if (after == local_planner::NarrowState::REALIGN_TIMEOUT) ++alignmentTimeouts;
+        }
+        if (after == local_planner::NarrowState::NARROW_TRAVERSE) {
+          maxNarrowYawError = std::max(maxNarrowYawError, std::abs(narrowYawError));
+        }
+        // No crab motion. twoWayDrive is bypassed and the selected direction
+        // remains fixed for the entire narrow section.
+        const float narrowTarget = (pathSize > 1 && endDis > stopDisThre &&
+                                    narrowMachine.permitsForwardMotion(narrowYawError)) ?
+            std::max(0.0F, static_cast<float>(maxSpeed * joySpeed *
+                                             latestConstraint.speed_scale)) : 0.0F;
+        if (narrowTarget <= 0.0F) {
+          vehicleSpeed = 0.0F;
+        } else {
+          vehicleSpeed += std::max(-maxSpeedStep,
+              std::min(narrowTarget - vehicleSpeed, maxSpeedStep));
+          vehicleSpeed = std::max(0.0F, vehicleSpeed);
+        }
+        const bool mayRotate = after != local_planner::NarrowState::REALIGN_TIMEOUT &&
+            std::abs(narrowYawError) <= latestConstraint.recovery_yaw_limit &&
+            pathSize > 1 && endDis > stopDisThre;
+        vehicleYawRate = mayRotate ? static_cast<float>(std::max(
+            -maxYawRate * PI / 180.0,
+            std::min(-stopYawRateGain * narrowYawError, maxYawRate * PI / 180.0))) : 0.0F;
+        publishPathFollowerStatus(local_planner::narrowStateName(after), odomFresh, pathFresh);
+      } else if (enableNarrowPassageMode) {
+        narrowMachine.step(false, true, 0.0, controlDt);
+        resetNarrowHeadingLock();
+        publishPathFollowerStatus("TRACKING", odomFresh, pathFresh);
+      }
 
       if (odomTime < stopInitTime + stopTime && stopInitTime > 0) {
         vehicleSpeed = 0;
@@ -570,8 +1015,16 @@ int main(int argc, char** argv)
           cmd_vel.twist.linear.y = -sin(dirDiff) * vehicleSpeed;
         }
         cmd_vel.twist.angular.z = vehicleYawRate;
-        
-        if (manualMode) {
+        if (followerMotionModel == "unicycle" && !narrowRequired) {
+          cmd_vel.twist.linear.x = vehicleSpeed;
+          cmd_vel.twist.linear.y = 0.0;
+        }
+        if (narrowRequired) {
+          cmd_vel.twist.linear.x = narrowMachine.permitsForwardMotion(narrowYawError) ?
+              static_cast<double>(selectedNarrowDirection) * std::max(0.0F, vehicleSpeed) : 0.0F;
+          cmd_vel.twist.linear.y = 0.0;
+        }
+        if (manualMode && !narrowRequired && followerMotionModel == "holonomic") {
           cmd_vel.twist.linear.x = maxSpeed * joyManualFwd;
           cmd_vel.twist.linear.y = maxSpeed / 2.0 * joyManualLeft;
           cmd_vel.twist.angular.z = maxYawRate * PI / 180.0 * joyManualYaw;
