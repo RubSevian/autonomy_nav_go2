@@ -2,7 +2,9 @@ cmake_minimum_required(VERSION 3.5)
 project(far_planner)
 
 set(CMAKE_CXX_STANDARD 14)
-set(CMAKE_BUILD_TYPE Release)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
 
 # Default to C++14
 if(NOT CMAKE_CXX_STANDARD)
@@ -79,6 +81,9 @@ if(BUILD_TESTING)
   target_include_directories(far_path_validation_test PRIVATE include ${PCL_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
   target_link_libraries(far_path_validation_test ${PCL_LIBRARIES})
   add_test(NAME far_path_validation_test COMMAND far_path_validation_test)
+  add_executable(far_queued_goal_lifecycle_test tests/queued_goal_lifecycle_test.cpp)
+  target_include_directories(far_queued_goal_lifecycle_test PRIVATE include)
+  add_test(NAME far_queued_goal_lifecycle_test COMMAND far_queued_goal_lifecycle_test)
 endif()
 
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})

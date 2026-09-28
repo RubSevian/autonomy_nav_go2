@@ -75,6 +75,11 @@ void FARMaster::PublishPlannerStatus(const std::string& state, const std::string
   add("is_odom_init", is_odom_init_ ? "true" : "false");
   add("is_cloud_init", is_cloud_init_ ? "true" : "false");
   add("is_graph_init", is_graph_init_ ? "true" : "false");
+  add("far_lifecycle_state", lifecycle_state_);
+  add("far_lifecycle_transition", lifecycle_transition_);
+  add("pending_goal_present", has_pending_goal_ ? "true" : "false");
+  add("queued_goal_revision", std::to_string(queued_goal_lifecycle_.queued_revision()));
+  add("consumed_goal_revision", std::to_string(queued_goal_lifecycle_.consumed_revision()));
   add("robot_x", is_odom_init_ ? std::to_string(robot_pos_.x) : "N/A");
   add("robot_y", is_odom_init_ ? std::to_string(robot_pos_.y) : "N/A");
   add("robot_z", is_odom_init_ ? std::to_string(robot_pos_.z) : "N/A");
@@ -102,6 +107,13 @@ void FARMaster::PublishPlannerStatus(const std::string& state, const std::string
   add("goal_local_free_count", goal_received_ ? std::to_string(goal_local_free_count_) : "N/A");
   add("goal_local_obs_count", goal_received_ ? std::to_string(goal_local_obs_count_) : "N/A");
   add("nav_graph_size", std::to_string(nav_graph_.size()));
+  std::size_t graph_edge_count = 0;
+  for (const auto& node : nav_graph_) if (node) graph_edge_count += node->connect_nodes.size();
+  add("nav_graph_edge_count", std::to_string(graph_edge_count / 2));
+  add("start_vertex_valid", odom_node_ptr_ ? "true" : "false");
+  add("start_vertex_id", odom_node_ptr_ ? std::to_string(odom_node_ptr_->id) : "N/A");
+  add("goal_vertex_valid", goal_ptr ? "true" : "false");
+  add("goal_vertex_id", goal_ptr ? std::to_string(goal_ptr->id) : "N/A");
   add("goal_has_parent", has_goal_current_ ? (goal_has_parent_ ? "true" : "false") : "N/A");
   add("goal_has_free_parent", has_goal_current_ ? (goal_has_free_parent_ ? "true" : "false") : "N/A");
   add("goal_is_free_traversable", has_goal_current_ ? (goal_is_free_traversable_ ? "true" : "false") : "N/A");
@@ -126,6 +138,19 @@ void FARMaster::PublishPlannerStatus(const std::string& state, const std::string
   add("local_terrain_obs_count", FARUtil::local_terrain_obs_ ? std::to_string(FARUtil::local_terrain_obs_->size()) : "N/A");
   array.status.push_back(status);
   planner_status_pub_->publish(array);
+}
+
+void FARMaster::LogLifecycleTransition(const std::string& transition, const std::string& state) {
+  lifecycle_transition_ = transition;
+  lifecycle_state_ = state;
+  std::size_t edge_count = 0;
+  for (const auto& node : nav_graph_) if (node) edge_count += node->connect_nodes.size();
+  const std::string start_id = odom_node_ptr_ ? std::to_string(odom_node_ptr_->id) : "N/A";
+  RCLCPP_INFO(nh_->get_logger(), "[FAR][LIFECYCLE] transition=%s state=%s vgraph_ready=%s graph_nodes=%zu graph_edges=%zu pending=%s queued_rev=%llu consumed_rev=%llu goal=(%.3f,%.3f,%.3f) start_valid=%s start_id=%s planning_requested=%s",
+      transition.c_str(), state.c_str(), is_graph_init_ ? "true" : "false", nav_graph_.size(), edge_count / 2, has_pending_goal_ ? "true" : "false",
+      static_cast<unsigned long long>(queued_goal_lifecycle_.queued_revision()), static_cast<unsigned long long>(queued_goal_lifecycle_.consumed_revision()),
+      has_pending_goal_ ? pending_goal_.point.x : 0.0, has_pending_goal_ ? pending_goal_.point.y : 0.0, has_pending_goal_ ? pending_goal_.point.z : 0.0,
+      odom_node_ptr_ ? "true" : "false", start_id.c_str(), goal_received_ ? "true" : "false");
 }
 
 void FARMaster::Init() {
@@ -248,6 +273,7 @@ void FARMaster::Init() {
 void FARMaster::ResetEnvironmentAndGraph() {
   PublishNavigationActive(false);
   has_pending_goal_ = false;
+  queued_goal_lifecycle_.Clear();
   goal_received_ = false;
   has_goal_original_ = false;
   has_goal_current_ = false;
@@ -359,10 +385,19 @@ void FARMaster::MainLoopCallBack() {
   if (!is_graph_init_ && !nav_graph_.empty()) {
     is_graph_init_ = true;
     RCLCPP_INFO(nh_->get_logger(), "FAR Planner V-Graph initialized");
+    LogLifecycleTransition("VGRAPH_READY", "READY");
     PublishPlannerStatus("VGRAPH_READY", "PLANNING", "FAR V-Graph initialized");
     if (has_pending_goal_) {
-      SetGoal(pending_goal_);
+      LogLifecycleTransition("QUEUED_GOAL_CONSUME_BEGIN", "GOAL_PENDING");
+      if (!queued_goal_lifecycle_.ConsumeIfReady(is_graph_init_, !nav_graph_.empty(), odom_node_ptr_ != NULL)) {
+        PublishPlannerStatus("GOAL_PENDING", "GOAL_WAITING_FOR_START",
+                             "queued goal retained until graph and start vertex are valid", true);
+        return;
+      }
+      const auto queued_goal = pending_goal_;
       has_pending_goal_ = false;
+      LogLifecycleTransition("START_VERTEX_RESOLVED", "PLANNING");
+      SetGoal(queued_goal);
       RCLCPP_INFO(nh_->get_logger(), "FAR Planner accepted the goal queued before graph initialization");
     }
   }
@@ -372,11 +407,18 @@ void FARMaster::MainLoopCallBack() {
 void FARMaster::PlanningCallBack() {
   if (!is_init_completed_ || !is_graph_init_) return;
   const NavNodePtr goal_ptr = graph_planner_.GetGoalNodePtr();
+  if (odom_node_ptr_ == NULL || nav_graph_.empty()) {
+    PublishNavigationActive(false);
+    PublishPlannerStatus("PLANNING_WAIT", "START_OR_GRAPH_UNAVAILABLE",
+                         "planning deferred: start vertex or V-Graph is unavailable");
+    return;
+  }
   if (goal_ptr == NULL) {
     graph_planner_.UpdateGraphTraverability(odom_node_ptr_, NULL);
     return;
   }
   ++plan_revision_;
+  LogLifecycleTransition("GOAL_VERTEX_RESOLVED", "PLANNING");
   const Point3D ori_p = graph_planner_.GetOriginNodePos(true);
   PointCloudPtr goal_obs(new pcl::PointCloud<PCLPoint>());
   PointCloudPtr goal_free(new pcl::PointCloud<PCLPoint>());
@@ -403,6 +445,7 @@ void FARMaster::PlanningCallBack() {
   bool is_planning_fails = false;
   bool is_current_free_nav = false;
   bool is_reach_goal = false;
+  LogLifecycleTransition("ROUTE_SEARCH_BEGIN", "PLANNING");
   const bool path_found = graph_planner_.PathToGoal(
       goal_ptr, candidate_path, candidate_nav, current_free_goal, is_planning_fails,
       is_reach_goal, is_current_free_nav);
@@ -447,6 +490,7 @@ void FARMaster::PlanningCallBack() {
     const bool route_changed = !has_committed_route_ || candidate_hash != committed_route_hash_ || waypoint_changed;
     // Commit all route metadata before publishing the corresponding waypoint.
     // A failed candidate never mutates the committed route.
+    LogLifecycleTransition("ROUTE_SEARCH_SUCCESS", "PLANNING");
     if (route_changed) {
       committed_route_ = candidate_path;
       committed_route_hash_ = candidate_hash;
@@ -464,6 +508,7 @@ void FARMaster::PlanningCallBack() {
       goal_pub_->publish(goal_waypoint_stamped_);
       planner_viz_.VizPoint3D(candidate_waypoint, "waypoint", VizColor::MAGNA, 1.5);
       planner_viz_.VizPath(committed_route_, is_current_free_nav);
+      LogLifecycleTransition("ROUTE_PUBLISHED", "ACTIVE");
       PublishPlannerStatus("WAYPOINT_PUBLISHED", "ROUTE_COMMITTED",
           "validated FAR route committed and waypoint handed off", true);
       RCLCPP_INFO(nh_->get_logger(),
@@ -530,17 +575,22 @@ void FARMaster::LocalBoundaryHandler(const std::vector<PointPair>& local_boundar
 
 
 Point3D FARMaster::ProjectNavWaypoint(const NavNodePtr& nav_node_ptr, const NavNodePtr& last_point_ptr) {
+  if (nav_node_ptr == NULL) {
+    RCLCPP_ERROR(nh_->get_logger(), "[FAR][ROUTE] refusing waypoint projection: candidate vertex is null");
+    return robot_pos_;
+  }
   bool is_momentum = false;
-  if (last_point_ptr == nav_node_ptr || (last_point_ptr != NULL && (last_point_ptr->position - nav_node_ptr_->position).norm() < FARUtil::kNearDist)) {
+  if (last_point_ptr == nav_node_ptr || (last_point_ptr != NULL && nav_node_ptr_ != NULL &&
+      (last_point_ptr->position - nav_node_ptr_->position).norm() < FARUtil::kNearDist)) {
     is_momentum = true;
   }
   Point3D waypoint = nav_node_ptr->position;
   float free_dist = master_params_.local_planner_range;
-  const Point3D extend_p = this->ExtendViewpointOnObsCloud(nav_node_ptr_, FARUtil::surround_obs_cloud_, free_dist);
+  const Point3D extend_p = this->ExtendViewpointOnObsCloud(nav_node_ptr, FARUtil::surround_obs_cloud_, free_dist);
   free_dist = std::max(free_dist, master_params_.robot_dim * 2.5f);
   if (master_params_.is_viewpoint_extend) {
     waypoint = extend_p;
-    planner_viz_.VizViewpointExtend(nav_node_ptr_, waypoint);
+    planner_viz_.VizViewpointExtend(nav_node_ptr, waypoint);
   }
   const Point3D diff_p = waypoint - robot_pos_;
   Point3D new_heading;
@@ -969,6 +1019,16 @@ void FARMaster::ExtractDynamicObsFromScan(const PointCloudPtr scanCloudIn,
 }
 
 void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
+  if (!is_graph_init_ || nav_graph_.empty() || odom_node_ptr_ == NULL) {
+    pending_goal_ = route_goal;
+    has_pending_goal_ = true;
+    queued_goal_lifecycle_.Queue();
+    LogLifecycleTransition("GOAL_QUEUED", "GOAL_PENDING");
+    PublishNavigationActive(false);
+    PublishPlannerStatus("GOAL_QUEUED", "GOAL_WAITING_FOR_START",
+                         "goal retained until V-Graph and start vertex are valid", true);
+    return;
+  }
   goal_received_ = true;
   goal_frame_ = route_goal.header.frame_id.empty() ? "N/A" : route_goal.header.frame_id;
   if (!std::isfinite(route_goal.point.x) || !std::isfinite(route_goal.point.y) ||
@@ -1006,6 +1066,7 @@ void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
   // No old path may remain authorized while the new goal is being planned.
   PublishNavigationActive(false);
   graph_planner_.UpdateGoal(goal_p);
+  LogLifecycleTransition("GOAL_VERTEX_RESOLVED", "PLANNING");
   PublishPlannerStatus("GOAL_ACCEPTED", "GOAL_ACCEPTED", "goal accepted; waiting for validated FAR route", true);
   FARUtil::Timer.start_time("Overall_executing", true);
   planner_viz_.VizPoint3D(goal_p, "original_goal", VizColor::RED, 1.5);
@@ -1031,6 +1092,7 @@ void FARMaster::NavigationCancelCallBack(const std_msgs::msg::Empty::SharedPtr) 
 
   PublishNavigationActive(false);
   has_pending_goal_ = false;
+  queued_goal_lifecycle_.Clear();
   goal_received_ = false;
   has_goal_original_ = false;
   has_goal_current_ = false;
@@ -1079,11 +1141,14 @@ void FARMaster::WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedP
   }
   last_requested_goal_ = *route_goal;
   has_last_requested_goal_ = true;
+  LogLifecycleTransition("GOAL_RECEIVED", is_graph_init_ ? "READY" : "INITIALIZING");
   if (!is_graph_init_) {
     pending_goal_ = *route_goal;
     has_pending_goal_ = true;
+    queued_goal_lifecycle_.Queue();
     goal_received_ = true;
     goal_frame_ = route_goal->header.frame_id;
+    LogLifecycleTransition("GOAL_QUEUED", "GOAL_PENDING");
     PublishPlannerStatus("GOAL_QUEUED", "GOAL_QUEUED", "goal queued until V-Graph initialization", true);
     return;
   }

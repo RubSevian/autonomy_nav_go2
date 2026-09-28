@@ -10,6 +10,7 @@
 #include "planner_visualizer.h"
 #include "scan_handler.h"
 #include "graph_msger.h"
+#include "queued_goal_lifecycle.h"
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <cstdint>
@@ -86,6 +87,9 @@ private:
     geometry_msgs::msg::PointStamped goal_waypoint_stamped_;
     geometry_msgs::msg::PointStamped pending_goal_;
     bool has_pending_goal_ = false;
+    QueuedGoalLifecycle queued_goal_lifecycle_;
+    std::string lifecycle_state_ = "INITIALIZING";
+    std::string lifecycle_transition_ = "STARTUP";
 
     bool is_cloud_init_ = false, is_scan_init_ = false, is_odom_init_ = false, is_planner_running_ = false;
     bool is_graph_init_ = false;
@@ -130,6 +134,7 @@ private:
 
     void PublishNavigationActive(bool active);
     void PublishPlannerStatus(const std::string& state, const std::string& code, const std::string& text, bool force = false);
+    void LogLifecycleTransition(const std::string& transition, const std::string& state);
 
     PointCloudPtr new_vertices_ptr_;
     PointCloudPtr temp_obs_ptr_;
