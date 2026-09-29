@@ -84,7 +84,9 @@ bool dirToVehicle = false;
 double pathScale = 1.0;
 double minPathScale = 0.75;
 double pathScaleStep = 0.25;
-bool enableNarrowPassageMode = false;
+bool enableNarrowPassageMode = false;  // legacy follower compatibility
+bool enableOrientationAwareCheck = false;
+bool enableNarrowRecoveredSelection = false;
 double narrowFootprintLength = 0.62;
 double narrowFootprintWidth = 0.40;
 double narrowLongitudinalMargin = 0.02;
@@ -224,6 +226,7 @@ struct LocalPlannerStatusData {
   int recoveredAfterDirectionFilter = 0;
   int recoveredAfterOtherFilters = 0;
   int recoveredEnteredSelection = 0;
+  int recoveredSelected = 0;
   int finalSelectableCount = 0;
   int bestCandidateGroupID = -1;
   int bestCandidateRotationID = -1;
@@ -348,6 +351,7 @@ void publishLocalStatus(const std::string& state, const std::string& code,
   add("recovered_after_direction_filter", std::to_string(localStatus.recoveredAfterDirectionFilter));
   add("recovered_after_other_filters", std::to_string(localStatus.recoveredAfterOtherFilters));
   add("recovered_entered_selection", std::to_string(localStatus.recoveredEnteredSelection));
+  add("recovered_selected", std::to_string(localStatus.recoveredSelected));
   add("final_selectable_count", std::to_string(localStatus.finalSelectableCount));
   add("best_candidate_id", std::to_string(localStatus.bestCandidateGroupID) + ":" + std::to_string(localStatus.bestCandidateRotationID));
   add("best_recovered_candidate_id", std::to_string(localStatus.bestRecoveredGroupID) + ":" + std::to_string(localStatus.bestRecoveredRotationID));
@@ -400,7 +404,10 @@ void publishLocalStatus(const std::string& state, const std::string& code,
   add("selected_path_rejection_reason", localStatus.selectedRejectionReason);
   add("planning_cycle_ms", std::to_string(localStatus.planningCycleMs));
   add("narrow_check_ms", std::to_string(localStatus.narrowCheckMs));
-  add("enable_narrow_passage_mode", enableNarrowPassageMode ? "true" : "false");
+  add("enable_narrow_passage_mode", enableNarrowRecoveredSelection ? "true" : "false");
+  add("enable_orientation_aware_check", enableOrientationAwareCheck ? "true" : "false");
+  add("enable_narrow_recovered_selection", enableNarrowRecoveredSelection ? "true" : "false");
+  add("narrow_mode", !enableOrientationAwareCheck ? "A_OFF_OFF" : (enableNarrowRecoveredSelection ? "C_ON_ON" : "B_ON_OFF"));
   add("selected_group_id", localStatus.hasPlanningData ? std::to_string(localStatus.selectedGroupID) : "N/A");
   add("selected_path_length", localStatus.hasPlanningData ? std::to_string(localStatus.selectedPathLength) : "N/A");
   add("path_found", localStatus.hasPlanningData ? (localStatus.pathFound ? "true" : "false") : "N/A");
@@ -543,7 +550,17 @@ void goalHandler(const geometry_msgs::msg::PointStamped::ConstSharedPtr goal)
 
 void navigationActiveHandler(const std_msgs::msg::Bool::ConstSharedPtr active)
 {
+  const bool wasNavigationActive = navigationActive;
   navigationActive = active->data;
+  if (wasNavigationActive && !navigationActive) {
+    activeCandidateValid = false;
+    activeCandidateGroupID = -1;
+    activeCandidateRotationID = -1;
+    activeCandidateDirection = 0;
+    activeCandidateNarrowMode = false;
+    activeCandidateScore = 0.0;
+    pathSwitchReason = "NAVIGATION_RESET";
+  }
 }
 
 void speedHandler(const std_msgs::msg::Float32::ConstSharedPtr speed)
@@ -996,7 +1013,7 @@ NarrowCheckResult checkNarrowGroup(int group_id, double rotation,
 
 void publishNarrowMarkers(const nav_msgs::msg::Path& path, bool critical,
                           double turn_radius) {
-  if (!enableNarrowPassageMode || !narrowMarkerPub) return;
+  if (!enableNarrowRecoveredSelection || !narrowMarkerPub) return;
   visualization_msgs::msg::MarkerArray array;
   visualization_msgs::msg::Marker clear;
   clear.header = path.header;
@@ -1105,6 +1122,8 @@ int main(int argc, char** argv)
   nh->declare_parameter<double>("dirWeight", dirWeight);
   nh->declare_parameter<double>("dirThre", dirThre);
   nh->declare_parameter<bool>("enableNarrowPassageMode", enableNarrowPassageMode);
+  nh->declare_parameter<bool>("enableOrientationAwareCheck", enableOrientationAwareCheck);
+  nh->declare_parameter<bool>("enableNarrowRecoveredSelection", enableNarrowRecoveredSelection);
   nh->declare_parameter<double>("narrowFootprintLength", narrowFootprintLength);
   nh->declare_parameter<double>("narrowFootprintWidth", narrowFootprintWidth);
   nh->declare_parameter<double>("narrowLongitudinalMargin", narrowLongitudinalMargin);
@@ -1133,6 +1152,7 @@ int main(int argc, char** argv)
   nh->declare_parameter<double>("joyToSpeedDelay", joyToSpeedDelay);
   nh->declare_parameter<double>("joyToCheckObstacleDelay", joyToCheckObstacleDelay);
   nh->declare_parameter<double>("goalClearRange", goalClearRange);
+  nh->declare_parameter<double>("searchRadius", searchRadius);
   nh->declare_parameter<double>("goalX", goalX);
   nh->declare_parameter<double>("goalY", goalY);
 
@@ -1160,6 +1180,8 @@ int main(int argc, char** argv)
   nh->get_parameter("dirWeight", dirWeight);
   nh->get_parameter("dirThre", dirThre);
   nh->get_parameter("enableNarrowPassageMode", enableNarrowPassageMode);
+  nh->get_parameter("enableOrientationAwareCheck", enableOrientationAwareCheck);
+  nh->get_parameter("enableNarrowRecoveredSelection", enableNarrowRecoveredSelection);
   nh->get_parameter("narrowFootprintLength", narrowFootprintLength);
   nh->get_parameter("narrowFootprintWidth", narrowFootprintWidth);
   nh->get_parameter("narrowLongitudinalMargin", narrowLongitudinalMargin);
@@ -1189,6 +1211,7 @@ int main(int argc, char** argv)
   nh->get_parameter("joyToCheckObstacleDelay", joyToCheckObstacleDelay);
   nh->get_parameter("goalCloseDis", goalCloseDis);
   nh->get_parameter("goalClearRange", goalClearRange);
+  nh->get_parameter("searchRadius", searchRadius);
   nh->get_parameter("goalX", goalX);
   nh->get_parameter("goalY", goalY);
   if (!std::isfinite(pathSwitchScoreMargin) || pathSwitchScoreMargin < 0.0 ||
@@ -1198,7 +1221,7 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  if (enableNarrowPassageMode &&
+  if (enableNarrowRecoveredSelection &&
       (!(narrowFootprintLength > 0.0 && narrowFootprintWidth > 0.0 &&
          narrowLongitudinalMargin >= 0.0 && narrowLateralMargin >= 0.0 &&
          narrowEnterYawToleranceDeg > 0.0 &&
@@ -1582,7 +1605,7 @@ int main(int argc, char** argv)
           if (broadBlocked) ++localStatus.candidateBlocked;
           else ++localStatus.broadPhasePassCount;
           bool narrowRecovered = false;
-          if (broadBlocked && enableNarrowPassageMode && checkObstacle) {
+          if (broadBlocked && enableOrientationAwareCheck && checkObstacle) {
             ++localStatus.narrowChecked;
             const int pathID = i % pathNum;
             const int groupID = pathList[pathID];
@@ -1643,7 +1666,7 @@ int main(int argc, char** argv)
               }
             }
           }
-          if (!broadBlocked || narrowRecovered) {
+          if (!broadBlocked || (narrowRecovered && enableNarrowRecoveredSelection)) {
             float penaltyScore = 1.0 - pathPenaltyList[i] / costHeightThre;
             if (penaltyScore < costScore) penaltyScore = costScore;
 
@@ -1779,6 +1802,7 @@ int main(int argc, char** argv)
           const double selectedClearance = selectedRequiresAlignment ?
               narrowGroupResults[selectedIndex].min_clearance : 0.0;
           localStatus.selectedRequiresAlignment = selectedRequiresAlignment;
+          localStatus.recoveredSelected = selectedRequiresAlignment ? 1 : 0;
           localStatus.selectedMinClearance = selectedClearance;
           localStatus.selectedTurnRadius = selectedRequiresAlignment ?
               narrowGroupResults[selectedIndex].turn_radius : 0.0;
@@ -1827,7 +1851,7 @@ int main(int argc, char** argv)
             }
           }
 
-          path.header.stamp = enableNarrowPassageMode ? nh->now() :
+          path.header.stamp = enableNarrowRecoveredSelection ? nh->now() :
               rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
           path.header.frame_id = "vehicle";
           localStatus.planningCycleMs = std::chrono::duration<double, std::milli>(
@@ -1972,7 +1996,7 @@ int main(int argc, char** argv)
         path.poses[0].pose.position.y = 0;
         path.poses[0].pose.position.z = 0;
 
-        path.header.stamp = enableNarrowPassageMode ? nh->now() :
+        path.header.stamp = enableNarrowRecoveredSelection ? nh->now() :
             rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
         path.header.frame_id = "vehicle";
         visibility_graph_msg::msg::LocalPathConstraint constraint;

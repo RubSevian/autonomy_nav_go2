@@ -87,6 +87,7 @@ private:
     geometry_msgs::msg::PointStamped goal_waypoint_stamped_;
     geometry_msgs::msg::PointStamped pending_goal_;
     bool has_pending_goal_ = false;
+    bool defer_pending_goal_until_next_main_loop_ = false;
     QueuedGoalLifecycle queued_goal_lifecycle_;
     std::string lifecycle_state_ = "INITIALIZING";
     std::string lifecycle_transition_ = "STARTUP";
@@ -188,6 +189,7 @@ private:
     void LocalBoundaryHandler(const std::vector<PointPair>& local_boundary);
 
     void MainLoopCallBack();
+    void TryConsumePendingGoal();
 
     void PlanningCallBack();
     

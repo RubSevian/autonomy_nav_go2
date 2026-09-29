@@ -273,8 +273,10 @@ void FARMaster::Init() {
 void FARMaster::ResetEnvironmentAndGraph() {
   PublishNavigationActive(false);
   has_pending_goal_ = false;
+  defer_pending_goal_until_next_main_loop_ = false;
   queued_goal_lifecycle_.Clear();
   goal_received_ = false;
+  has_last_requested_goal_ = false;
   has_goal_original_ = false;
   has_goal_current_ = false;
   has_graph_goal_origin_ = false;
@@ -387,21 +389,34 @@ void FARMaster::MainLoopCallBack() {
     RCLCPP_INFO(nh_->get_logger(), "FAR Planner V-Graph initialized");
     LogLifecycleTransition("VGRAPH_READY", "READY");
     PublishPlannerStatus("VGRAPH_READY", "PLANNING", "FAR V-Graph initialized");
-    if (has_pending_goal_) {
-      LogLifecycleTransition("QUEUED_GOAL_CONSUME_BEGIN", "GOAL_PENDING");
-      if (!queued_goal_lifecycle_.ConsumeIfReady(is_graph_init_, !nav_graph_.empty(), odom_node_ptr_ != NULL)) {
-        PublishPlannerStatus("GOAL_PENDING", "GOAL_WAITING_FOR_START",
-                             "queued goal retained until graph and start vertex are valid", true);
-        return;
-      }
-      const auto queued_goal = pending_goal_;
-      has_pending_goal_ = false;
-      LogLifecycleTransition("START_VERTEX_RESOLVED", "PLANNING");
-      SetGoal(queued_goal);
-      RCLCPP_INFO(nh_->get_logger(), "FAR Planner accepted the goal queued before graph initialization");
-    }
+    defer_pending_goal_until_next_main_loop_ = has_pending_goal_;
   }
+  this->TryConsumePendingGoal();
+}
 
+void FARMaster::TryConsumePendingGoal() {
+  if (!has_pending_goal_) return;
+  if (defer_pending_goal_until_next_main_loop_) {
+    defer_pending_goal_until_next_main_loop_ = false;
+    PublishPlannerStatus("GOAL_PENDING", "GOAL_WAITING_FOR_POST_GRAPH_CYCLE",
+                         "queued goal retained for one complete post-V-Graph update");
+    return;
+  }
+  if (!is_graph_init_ || nav_graph_.empty() || odom_node_ptr_ == NULL) {
+    PublishPlannerStatus("GOAL_PENDING", "GOAL_WAITING_FOR_START",
+                         "queued goal retained until graph and start vertex are valid");
+    return;
+  }
+  LogLifecycleTransition("QUEUED_GOAL_CONSUME_BEGIN", "GOAL_PENDING");
+  if (!queued_goal_lifecycle_.ConsumeIfReady(true, true, true)) {
+    RCLCPP_ERROR(nh_->get_logger(), "[FAR][LIFECYCLE] pending-goal ownership mismatch");
+    return;
+  }
+  const auto queued_goal = pending_goal_;
+  has_pending_goal_ = false;
+  LogLifecycleTransition("START_VERTEX_RESOLVED", "PLANNING");
+  SetGoal(queued_goal);
+  RCLCPP_INFO(nh_->get_logger(), "FAR Planner accepted the goal queued before graph/start initialization");
 }
 
 void FARMaster::PlanningCallBack() {
@@ -543,6 +558,8 @@ void FARMaster::PlanningCallBack() {
     PublishNavigationActive(false);
     has_committed_route_ = false;
     committed_route_.clear();
+    has_last_requested_goal_ = false;
+
     PublishPlannerStatus("NAVIGATION_STOPPED", "GOAL_REACHED", "FAR reports goal reached", true);
   }
   plan_timer_.data = 0.0F;
@@ -580,8 +597,8 @@ Point3D FARMaster::ProjectNavWaypoint(const NavNodePtr& nav_node_ptr, const NavN
     return robot_pos_;
   }
   bool is_momentum = false;
-  if (last_point_ptr == nav_node_ptr || (last_point_ptr != NULL && nav_node_ptr_ != NULL &&
-      (last_point_ptr->position - nav_node_ptr_->position).norm() < FARUtil::kNearDist)) {
+  if (last_point_ptr == nav_node_ptr || (last_point_ptr != NULL &&
+      (last_point_ptr->position - nav_node_ptr->position).norm() < FARUtil::kNearDist)) {
     is_momentum = true;
   }
   Point3D waypoint = nav_node_ptr->position;
@@ -1094,6 +1111,7 @@ void FARMaster::NavigationCancelCallBack(const std_msgs::msg::Empty::SharedPtr) 
   has_pending_goal_ = false;
   queued_goal_lifecycle_.Clear();
   goal_received_ = false;
+  has_last_requested_goal_ = false;
   has_goal_original_ = false;
   has_goal_current_ = false;
   has_graph_goal_origin_ = false;
@@ -1142,14 +1160,16 @@ void FARMaster::WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedP
   last_requested_goal_ = *route_goal;
   has_last_requested_goal_ = true;
   LogLifecycleTransition("GOAL_RECEIVED", is_graph_init_ ? "READY" : "INITIALIZING");
-  if (!is_graph_init_) {
+  if (!is_init_completed_ || !is_graph_init_) {
     pending_goal_ = *route_goal;
     has_pending_goal_ = true;
     queued_goal_lifecycle_.Queue();
     goal_received_ = true;
     goal_frame_ = route_goal->header.frame_id;
     LogLifecycleTransition("GOAL_QUEUED", "GOAL_PENDING");
-    PublishPlannerStatus("GOAL_QUEUED", "GOAL_QUEUED", "goal queued until V-Graph initialization", true);
+    if (is_init_completed_) {
+      PublishPlannerStatus("GOAL_QUEUED", "GOAL_QUEUED", "goal queued until V-Graph initialization", true);
+    }
     return;
   }
   SetGoal(*route_goal);
