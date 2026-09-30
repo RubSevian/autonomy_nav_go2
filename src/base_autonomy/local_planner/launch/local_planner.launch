@@ -97,6 +97,7 @@
          which covers the 0.369 m static circumscribed robot radius.  Do not
          fall back to 0.50: its 0.275 m correspondence radius is undersized. -->
     <param name="pathScale" value="0.75" />
+    <param name="pathRangeStep" value="0.5" />
     <param name="searchRadius" value="$(var searchRadius)" />
     <param name="minPathScale" value="0.75" />
     <param name="pathScaleStep" value="0.25" />
@@ -125,6 +126,9 @@
     <param name="yawRateGain" value="1.5" />
     <param name="stopYawRateGain" value="1.5" />
     <!-- Provisional policy-compatible limit: 28 deg/s = 0.489 rad/s. -->
+    <param name="maxYawRate" value="28.0" />
+    <param name="maxSpeed" value="$(var maxSpeed)" />
+    <param name="inclThre" value="45.0" />
     <param name="stopDisThre" value="$(var stopDisThre)" />
     <param name="slowDwnDisThre" value="$(var slowDwnDisThre)" />
     <param name="maxAccel" value="2.0" />

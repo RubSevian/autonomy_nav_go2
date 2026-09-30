@@ -775,6 +775,14 @@ void readPathList()
 
 void publishCollisionEnvelope(float activePathScale)
 {
+  // This marker grid is diagnostic only; do not recompute it at planner rate
+  // when RViz is absent or when a recent visualization is still current.
+  if (!collisionEnvelopePub || collisionEnvelopePub->get_subscription_count() == 0) return;
+  static auto lastPublish = std::chrono::steady_clock::time_point::min();
+  const auto nowSteady = std::chrono::steady_clock::now();
+  if (lastPublish != std::chrono::steady_clock::time_point::min() &&
+      nowSteady - lastPublish < std::chrono::milliseconds(200)) return;
+  lastPublish = nowSteady;
   if (!collisionEnvelopePub || diagnosticStraightPathID < 0 ||
       diagnosticStraightPathID >= pathNum || activePathScale <= 0.0f) {
     return;
