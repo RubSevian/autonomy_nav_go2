@@ -19,7 +19,7 @@ class NavigationGate:
         self.active_received = None
         self.locomotion_ready = False
         self.locomotion_received = None
-        self.enabled_previous = False
+        self.goal_received = False
         self.block_reason = 'startup'
 
     @staticmethod
@@ -36,6 +36,9 @@ class NavigationGate:
         return self.mode == 'command_test' or all(
             self.fresh(now, self.health.get(name), self.sensor_timeout)
             for name in ('lidar', 'imu', 'odom', 'tf'))
+
+    def goal(self):
+        self.goal_received = True
 
     def planner_active(self, active, now):
         self.active = bool(active)
@@ -55,10 +58,13 @@ class NavigationGate:
 
     def cancel(self):
         self.cancelled = True
+        self.goal_received = False
         self.clear_request()
 
     def resume(self):
         self.cancelled = False
+        self.goal_received = False
+        self.health['path'] = None
         self.clear_request()  # never replay a pre-cancel command
 
     def enabled(self, now):
@@ -68,11 +74,13 @@ class NavigationGate:
             self.block_reason = 'localization_unavailable'
         elif not self.locomotion_ready or not self.fresh(now, self.locomotion_received, .5):
             self.block_reason = 'locomotion_not_active'
+        elif self.mode == 'stack' and not self.goal_received:
+            self.block_reason = 'new_goal_required'
         elif self.mode == 'stack' and not (self.active and self.fresh(now, self.active_received, .5)):
             self.block_reason = 'planner_inactive'
         elif self.mode == 'stack' and not self.fresh(now, self.health.get('path'), .5):
             self.block_reason = 'path_unavailable'
-        elif self.mode == 'stack' and self.health.get('stop') is None:
+        elif self.health.get('stop') is None:
             self.block_reason = 'planner_stop'
         else:
             self.block_reason = ''
@@ -95,7 +103,6 @@ class NavigationGate:
         enabled = self.enabled(now)
         if not enabled:
             self.clear_request()
-        self.enabled_previous = enabled
         if not enabled or not self.fresh(now, self.request_received, self.command_timeout - self.request_header_age):
             return ZERO
         return self.request

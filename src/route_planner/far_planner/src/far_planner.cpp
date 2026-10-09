@@ -44,7 +44,23 @@ void FARMaster::Init() {
   reach_goal_pub_     = nh_->create_publisher<std_msgs::msg::Bool>("/far_reach_goal_status", 5);
   navigation_active_pub_ = nh_->create_publisher<std_msgs::msg::Bool>(
       "/navigation_active", rclcpp::QoS(1).transient_local());
+  navigation_heartbeat_pub_ = nh_->create_publisher<std_msgs::msg::String>("/go2/navigation/planner_heartbeat", 1);
+  navigation_session_ = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
   PublishNavigationActive(false);
+  cancel_goal_service_ = nh_->create_service<std_srvs::srv::Trigger>(
+      "/far_planner/cancel_goal", [this](std_srvs::srv::Trigger::Request::SharedPtr,
+          std_srvs::srv::Trigger::Response::SharedPtr response) {
+        // Default mutually-exclusive callback group also owns both planner timers.
+        // Clear only the mission; preserve the environment/visibility graph.
+        has_pending_goal_ = false;
+        graph_planner_.CancelGoal();
+        is_planner_running_ = false;
+        nav_node_ptr_ = nullptr;
+        nav_heading_ = Point3D(0,0,0);
+        PublishNavigationActive(false);
+        response->success = true;
+        response->message = "active and queued goals cancelled; new goal required";
+      });
 
   // Terminal formatting subscriber
   read_command_sub_   = nh_->create_subscription<std_msgs::msg::String>("/read_file_dir", 1, std::bind(&FARMaster::ReadFileCommand, this, std::placeholders::_1));
@@ -245,6 +261,9 @@ void FARMaster::MainLoopCallBack() {
 }
 
 void FARMaster::PlanningCallBack() {
+  // A live callback heartbeat, including inactive state. A stalled planner
+  // cannot keep its cached Bool alive merely through DDS discovery.
+  PublishNavigationActive(navigation_active_);
   if (!is_init_completed_ || !is_graph_init_) return;
   const NavNodePtr goal_ptr = graph_planner_.GetGoalNodePtr();
   if (goal_ptr == NULL) {
@@ -795,13 +814,17 @@ void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
 }
 
 void FARMaster::PublishNavigationActive(bool active) {
-  if (navigation_status_published_ && navigation_active_ == active && navigation_active_pub_) return;
   navigation_active_ = active;
+  if (navigation_heartbeat_pub_) {
+    std_msgs::msg::String heartbeat;
+    const auto stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    heartbeat.data = "{\"session_id\":\"" + navigation_session_ + "\",\"observed_ns\":" + std::to_string(stamp) + ",\"active\":" + (active ? "true}" : "false}");
+    navigation_heartbeat_pub_->publish(heartbeat);
+  }
   if (navigation_active_pub_) {
     std_msgs::msg::Bool msg;
     msg.data = active;
     navigation_active_pub_->publish(msg);
-    navigation_status_published_ = true;
   }
 }
 

@@ -15,6 +15,7 @@
   <arg name="sendSportCommand" default="false"/>
   <arg name="odomTimeoutSec" default="0.5"/>
   <arg name="pathTimeoutSec" default="0.5"/>
+  <arg name="publishBaseTf" default="true"/>
 
   <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
     <param name="pathFolder" value="$(find-pkg-share local_planner)/paths" />
@@ -97,7 +98,9 @@
     <param name="pathTimeoutSec" value="$(var pathTimeoutSec)"/>
   </node>
 
-  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
+  <group if="$(var publishBaseTf)">
+    <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
+  </group>
 
   <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="sensorTransPublisher" args="0 0 $(var cameraOffsetZ) -1.5707963 0 -1.5707963 /sensor /camera"/>
   

@@ -10,6 +10,7 @@
 #include "planner_visualizer.h"
 #include "scan_handler.h"
 #include "graph_msger.h"
+#include <std_srvs/srv/trigger.hpp>
 
 
 struct FARMasterParams {
@@ -61,6 +62,8 @@ private:
     rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr traverse_time_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr reach_goal_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr navigation_active_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr navigation_heartbeat_pub_;
+    std::string navigation_session_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr dynamic_obs_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr surround_free_debug_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr surround_obs_debug_;
@@ -71,6 +74,7 @@ private:
 
     rclcpp::TimerBase::SharedPtr planning_event_;
     rclcpp::TimerBase::SharedPtr main_event_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr cancel_goal_service_;
 
     std_msgs::msg::Float32 runtimer_, plan_timer_;
 
@@ -85,7 +89,6 @@ private:
     bool is_cloud_init_, is_scan_init_, is_odom_init_, is_planner_running_;
     bool is_graph_init_;
     bool navigation_active_ = false;
-    bool navigation_status_published_ = false;
 
     void PublishNavigationActive(bool active);
 

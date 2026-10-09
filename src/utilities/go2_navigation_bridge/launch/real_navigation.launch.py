@@ -22,20 +22,24 @@ def _stack(context):
         raise ValueError('Real IMU calibration file required: ' + str(calibration))
     values = yaml.safe_load(calibration.read_text())
     keys = ('acc_bias_x','acc_bias_y','acc_bias_z','ang_bias_x','ang_bias_y','ang_bias_z','ang_z2x_proj','ang_z2y_proj')
-    if not isinstance(values, dict) or any(key not in values or not isinstance(values[key], (int,float)) or not math.isfinite(values[key]) for key in keys):
+    if not isinstance(values, dict) or any(key not in values or type(values[key]) not in (int,float) or not math.isfinite(values[key]) for key in keys):
         raise ValueError('Calibration must contain eight finite bias/projection values')
     def include(package, filename, args=None):
         path = str(Path(get_package_share_directory(package)) / 'launch' / filename)
         return IncludeLaunchDescription(AnyLaunchDescriptionSource(path), launch_arguments=(args or {}).items())
     actions.append(include('point_lio_unilidar', 'mapping_utlidar.launch', {'rviz': 'false', 'calibration_path': str(calibration)}))
     # Preserve Jazzy frame relationships; no simulated sensor/GT nodes.
+    offsets = [float(get(name)) for name in ('sensor_offset_x', 'sensor_offset_y')]
+    if not all(math.isfinite(value) for value in offsets):
+        raise ValueError('Sensor offsets must be finite')
     actions += [Node(package='tf2_ros', executable='static_transform_publisher', name='nav_map_camera_init', arguments=['--frame-id','map','--child-frame-id','camera_init']),
-                Node(package='tf2_ros', executable='static_transform_publisher', name='nav_aft_sensor', arguments=['--frame-id','aft_mapped','--child-frame-id','sensor'])]
-    actions.append(Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[{'input_mode': 'stack', 'local_route': stage == 'local'}], output='screen'))
+                Node(package='tf2_ros', executable='static_transform_publisher', name='nav_aft_sensor', arguments=['--frame-id','aft_mapped','--child-frame-id','sensor']),
+                Node(package='tf2_ros', executable='static_transform_publisher', name='nav_sensor_vehicle', arguments=['--frame-id','sensor','--child-frame-id','vehicle','--x',str(-offsets[0]),'--y',str(-offsets[1])])]
+    actions.append(Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[{'input_mode': 'stack', 'local_route': stage == 'local', 'far_route': stage == 'far'}], output='screen'))
     if stage in ('local','far'):
         # Remap planner output only; bridge is the sole publisher on physical /cmd_vel.
         planners = [SetRemap(src='/cmd_vel', dst='/navigation/cmd_vel'),
-                    include('local_planner','local_planner.launch', {'autonomyMode':'true','maxSpeed':'0.2','autonomySpeed':'0.2','is_real_robot':'false','sendSportCommand':'false','sensorOffsetX':get('sensor_offset_x'),'sensorOffsetY':get('sensor_offset_y')}),
+                    include('local_planner','local_planner.launch', {'autonomyMode':'true','maxSpeed':'0.2','autonomySpeed':'0.2','is_real_robot':'false','sendSportCommand':'false','publishBaseTf':'false','sensorOffsetX':get('sensor_offset_x'),'sensorOffsetY':get('sensor_offset_y')}),
                     include('terrain_analysis','terrain_analysis.launch'),
                     include('terrain_analysis_ext','terrain_analysis_ext.launch')]
         if stage == 'far':

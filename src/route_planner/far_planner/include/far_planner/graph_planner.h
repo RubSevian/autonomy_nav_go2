@@ -142,6 +142,14 @@ public:
 GraphPlanner() = default;
 ~GraphPlanner() = default;
 
+void CancelGoal() {
+    GoalReset();
+    is_goal_init_ = false;
+    is_global_path_init_ = false;
+    recorded_path_.clear();
+    path_momentum_counter_ = 0;
+}
+
 void Init(const rclcpp::Node::SharedPtr nh, const GraphPlannerParams& params);
 
 
