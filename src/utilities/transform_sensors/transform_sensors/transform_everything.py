@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 import rclpy
+from rclpy.executors import ExternalShutdownException
+from rclpy.utilities import try_shutdown
 from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import Imu
@@ -313,9 +315,11 @@ def main(args=None):
     transform_node = Repuber()
     try:
         rclpy.spin(transform_node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         transform_node.destroy_node()
-        rclpy.shutdown()
+        try_shutdown()
 
 if __name__ == '__main__':
     main()
