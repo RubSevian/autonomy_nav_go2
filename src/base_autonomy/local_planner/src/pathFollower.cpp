@@ -346,7 +346,9 @@ int main(int argc, char** argv)
 
   auto pubSpeed = nh->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel", 5);
 
-  auto pubGo2Request = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
+  rclcpp::Publisher<unitree_api::msg::Request>::SharedPtr pubGo2Request;
+  if (is_real_robot && sendSportCommand)
+    pubGo2Request = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
 
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header.frame_id = "vehicle";

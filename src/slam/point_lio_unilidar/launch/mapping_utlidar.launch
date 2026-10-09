@@ -1,8 +1,11 @@
 <launch>
 	<!-- Launch file for Unitree L1 LiDAR mounted on Go2 -->
 	<arg name="rviz" default="true" />
+	<arg name="calibration_path" default="" />
 
-	<node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="transform_sensors" exec="transform_everything" name="transform_everything" output="screen" />
+	<node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="transform_sensors" exec="transform_everything" name="transform_everything" output="screen">
+        <param name="calibration_path" value="$(var calibration_path)" />
+    </node>
 
 	<node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="point_lio_unilidar" exec="pointlio_mapping" name="laserMapping" output="screen">
 		<param from="$(find-pkg-share point_lio_unilidar)/config/utlidar.yaml" />
@@ -20,6 +23,7 @@
 		<param name="cube_side_length" value="1000.0" /> <!--2000-->
 		<param name="runtime_pos_log_enable" value="false" /> <!--1-->
 
+		<remap from="/path" to="/point_lio/path" />
 		<remap from="/cloud_registered" to="/registered_scan" />
 		<remap from="/aft_mapped_to_init" to="/state_estimation" />
 		
