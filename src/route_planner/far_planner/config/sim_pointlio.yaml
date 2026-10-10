@@ -9,7 +9,8 @@ far_planner:
     # It deliberately remains 0.60 m: it yields 0.40 m, matching the static
     # Go2+RARS01 circumscribed radius 0.369 m with a small voxel margin.
     robot_dim: 0.6
-    vehicle_height: 0.55               # Height used by terrain/obstacle filtering [m].
+    vehicle_height: 0.34               # Nominal odometry-origin height above ground [m], NOT body height.
+    auto_vehicle_height: true          # Refine from local free terrain; retain nominal/last estimate if unavailable.
     sensor_range: 8.0                  # Radius of current sensor/map processing [m].
     terrain_range: 6.0                 # Terrain map radius used by FAR [m].
     local_planner_range: 2.5           # FAR-to-localPlanner handoff horizon [m].

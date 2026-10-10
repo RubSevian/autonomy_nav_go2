@@ -28,8 +28,15 @@ void FARMaster::PublishPlannerStatus(const std::string& state, const std::string
                                      const std::string& text, bool force) {
   if (!planner_status_pub_) return;
   const std::string signature = state + "|" + code + "|" + text;
-  if (!force && signature == last_status_signature_) return;
+  const double stamp = nh_->now().seconds();
+  // Retain state transitions immediately, but refresh changing counters at 1 Hz.
+  if (!force && signature == last_status_signature_ && stamp >= last_status_stamp_ &&
+      stamp - last_status_stamp_ < 1.0) return;
   last_status_signature_ = signature;
+  last_status_stamp_ = stamp;
+  last_status_state_ = state;
+  last_status_code_ = code;
+  last_status_text_ = text;
 
   const NavNodePtr goal_ptr = graph_planner_.GetGoalNodePtr();
   const NavNodePtr graph_odom_ptr = graph_planner_.GetOdomNodePtr();
@@ -83,6 +90,14 @@ void FARMaster::PublishPlannerStatus(const std::string& state, const std::string
   add("robot_x", is_odom_init_ ? std::to_string(robot_pos_.x) : "N/A");
   add("robot_y", is_odom_init_ ? std::to_string(robot_pos_.y) : "N/A");
   add("robot_z", is_odom_init_ ? std::to_string(robot_pos_.z) : "N/A");
+  add("vehicle_height_nominal", std::to_string(master_params_.vehicle_height));
+  add("vehicle_height_effective", std::to_string(FARUtil::vehicle_height));
+  add("vehicle_height_source", !auto_vehicle_height_ ? "CONFIGURED" :
+      vehicle_height_updated_ ? "LOCAL_FREE_TERRAIN" :
+      vehicle_height_estimator_->initialized() ? "HELD_NO_VALID_LOCAL_GROUND" : "NOMINAL_FALLBACK");
+  add("vehicle_height_sample_count", std::to_string(vehicle_height_estimator_->sample_count()));
+  add("local_ground_z", vehicle_height_estimator_->initialized() && is_odom_init_ ?
+      std::to_string(robot_pos_.z - FARUtil::vehicle_height) : "N/A");
   add("graph_odom_x", graph_odom_ptr ? std::to_string(graph_odom_ptr->position.x) : "N/A");
   add("graph_odom_y", graph_odom_ptr ? std::to_string(graph_odom_ptr->position.y) : "N/A");
   add("graph_odom_z", graph_odom_ptr ? std::to_string(graph_odom_ptr->position.z) : "N/A");
@@ -179,7 +194,6 @@ void FARMaster::Init() {
   navigation_active_pub_ = nh_->create_publisher<std_msgs::msg::Bool>(
       "/navigation_active", rclcpp::QoS(1).transient_local());
   PublishNavigationActive(false);
-  PublishPlannerStatus("STARTUP", "STARTUP", "FAR initialized; waiting for odometry and obstacle map");
 
   // Terminal formatting subscriber
   read_command_sub_   = nh_->create_subscription<std_msgs::msg::String>("/read_file_dir", 1, std::bind(&FARMaster::ReadFileCommand, this, std::placeholders::_1));
@@ -267,6 +281,13 @@ void FARMaster::Init() {
 
   // init complete
   is_init_completed_ = true;
+  PublishPlannerStatus("STARTUP", "STARTUP", "FAR initialized; waiting for odometry and obstacle map");
+  if (nh_->declare_parameter<bool>("restart_on_time_jump", false)) {
+    rcl_jump_threshold_t threshold{};
+    threshold.min_backward.nanoseconds = -500000000;  // Ignore packet jitter; reset on epoch rewind.
+    time_jump_handler_ = nh_->get_clock()->create_jump_callback(nullptr,
+        [this](const rcl_time_jump_t&) { time_reset_requested_ = true; }, threshold);
+  }
   RCLCPP_INFO(nh_->get_logger(), "FAR Planner Initiated Complete");
 }
 
@@ -306,9 +327,20 @@ void FARMaster::ResetEnvironmentAndGraph() {
 }
 
 void FARMaster::MainLoopCallBack() {
+  if (time_reset_requested_) {
+    PublishNavigationActive(false);
+    PublishPlannerStatus("TIME_RESET", "TIME_RESET", "clock rewound; cancelling goal and restarting FAR", true);
+    RCLCPP_WARN(nh_->get_logger(), "[TIME_RESET] restarting FAR with an empty map and no goal");
+    rclcpp::shutdown();
+    return;
+  }
   if (!is_init_completed_) {
     return;
   }
+  // A ready, idle planner may emit no state transition for minutes. Its retained
+  // counters must still describe the current map, not the first ready snapshot.
+  if (!last_status_state_.empty())
+    PublishPlannerStatus(last_status_state_, last_status_code_, last_status_text_);
   if (is_reset_env_) {
       this->ResetEnvironmentAndGraph();
       is_reset_env_ = false;
@@ -420,6 +452,7 @@ void FARMaster::TryConsumePendingGoal() {
 }
 
 void FARMaster::PlanningCallBack() {
+  if (time_reset_requested_) return;
   if (!is_init_completed_ || !is_graph_init_) return;
   const NavNodePtr goal_ptr = graph_planner_.GetGoalNodePtr();
   if (odom_node_ptr_ == NULL || nav_graph_.empty()) {
@@ -706,6 +739,10 @@ void FARMaster::LoadROSParams() {
   nh_->get_parameter("voxel_dim", master_params_.voxel_dim);
   nh_->get_parameter("robot_dim", master_params_.robot_dim);
   nh_->get_parameter("vehicle_height", master_params_.vehicle_height);
+  auto_vehicle_height_ = nh_->declare_parameter<bool>("auto_vehicle_height", false);
+  if (!std::isfinite(master_params_.vehicle_height) || master_params_.vehicle_height <= 0.0f)
+    throw std::invalid_argument("vehicle_height must be finite and positive");
+  vehicle_height_estimator_.reset(new VehicleHeightEstimator(master_params_.vehicle_height));
   nh_->get_parameter("sensor_range", master_params_.sensor_range);
   nh_->get_parameter("terrain_range", master_params_.terrain_range);
   nh_->get_parameter("local_planner_range", master_params_.local_planner_range);
@@ -857,6 +894,7 @@ void FARMaster::LoadROSParams() {
 }
 
 void FARMaster::OdomCallBack(const nav_msgs::msg::Odometry::SharedPtr msg) {
+  if (time_reset_requested_) return;
   // transform from odom frame to mapping frame
   std::string odom_frame = msg->header.frame_id;
   tf2::Transform tf_odom_pose;
@@ -949,7 +987,8 @@ void FARMaster::TerrainLocalCallBack(const sensor_msgs::msg::PointCloud2::Shared
 }
 
 void FARMaster::TerrainCallBack(const sensor_msgs::msg::PointCloud2::SharedPtr pc) {
-  if (!is_odom_init_) return;
+  if (!is_odom_init_ || time_reset_requested_) return;
+  vehicle_height_updated_ = false;
   // update map grid robot center
   map_handler_.UpdateRobotPosition(FARUtil::robot_pos);
   if (!is_stop_update_) {
@@ -958,6 +997,19 @@ void FARMaster::TerrainCallBack(const sensor_msgs::msg::PointCloud2::SharedPtr p
                                                                master_params_.terrain_range,
                                                                FARUtil::kTolerZ));
     FARUtil::ExtractFreeAndObsCloud(temp_cloud_ptr_, temp_free_ptr_, temp_obs_ptr_);
+    if (auto_vehicle_height_) {
+      std::vector<float> ground_samples;
+      for (const auto& p : temp_free_ptr_->points) {
+        const float dx = p.x - robot_pos_.x, dy = p.y - robot_pos_.y;
+        const float distance_squared = dx * dx + dy * dy;
+        // Exclude the body/feet and far terrain. No MuJoCo truth is used here.
+        if (distance_squared >= 0.25f * 0.25f && distance_squared <= 1.5f * 1.5f)
+          ground_samples.push_back(robot_pos_.z - p.z);
+      }
+      vehicle_height_updated_ = vehicle_height_estimator_->Update(
+          std::move(ground_samples), rclcpp::Time(pc->header.stamp).seconds());
+      FARUtil::vehicle_height = vehicle_height_estimator_->height();
+    }
     if (!master_params_.is_static_env) {
       FARUtil::RemoveOverlapCloud(temp_obs_ptr_, FARUtil::stack_dyobs_cloud_, true);
     }
@@ -1143,6 +1195,7 @@ void FARMaster::NavigationCancelCallBack(const std_msgs::msg::Empty::SharedPtr) 
 }
 
 void FARMaster::WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedPtr route_goal) {
+  if (time_reset_requested_) return;
   if (!std::isfinite(route_goal->point.x) || !std::isfinite(route_goal->point.y) ||
       !std::isfinite(route_goal->point.z) || route_goal->header.frame_id.empty()) {
     RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal with empty frame or non-finite coordinates");

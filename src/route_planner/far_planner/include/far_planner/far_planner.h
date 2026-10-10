@@ -14,6 +14,8 @@
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <cstdint>
+#include <atomic>
+#include "vehicle_height_estimator.h"
 
 
 struct FARMasterParams {
@@ -117,6 +119,13 @@ private:
     bool planning_failed_ = false;
     bool goal_reached_ = false;
     std::string last_status_signature_;
+    std::string last_status_state_, last_status_code_, last_status_text_;
+    double last_status_stamp_ = -1.0;
+    bool auto_vehicle_height_ = false;
+    std::unique_ptr<VehicleHeightEstimator> vehicle_height_estimator_;
+    bool vehicle_height_updated_ = false;
+    std::atomic<bool> time_reset_requested_{false};
+    rclcpp::JumpHandler::SharedPtr time_jump_handler_;
     // Route commits are an atomic handoff boundary: no partially validated
     // candidate may replace these values or be sent to localPlanner.
     NodePtrStack committed_route_;

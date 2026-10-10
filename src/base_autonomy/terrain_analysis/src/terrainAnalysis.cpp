@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <chrono>
+#include <atomic>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
@@ -206,6 +207,14 @@ void clearingHandler(const std_msgs::msg::Float32::ConstSharedPtr dis) {
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
   auto nh = rclcpp::Node::make_shared("terrainAnalysis");
+  std::atomic<bool> time_reset_requested{false};
+  rclcpp::JumpHandler::SharedPtr time_jump_handler;
+  if (nh->declare_parameter<bool>("restart_on_time_jump", false)) {
+    rcl_jump_threshold_t threshold{};
+    threshold.min_backward.nanoseconds = -500000000;
+    time_jump_handler = nh->get_clock()->create_jump_callback(nullptr,
+        [&time_reset_requested](const rcl_time_jump_t&) { time_reset_requested = true; }, threshold);
+  }
 
   nh->declare_parameter<string>("worldFrame", worldFrame);
   nh->declare_parameter<double>("scanVoxelSize", scanVoxelSize);
@@ -293,6 +302,10 @@ int main(int argc, char **argv) {
   bool status = rclcpp::ok();
   while (status) {
     rclcpp::spin_some(nh);
+    if (time_reset_requested) {
+      RCLCPP_WARN(nh->get_logger(), "[TIME_RESET] restarting terrainAnalysis with an empty voxel history");
+      break;
+    }
     if (newlaserCloud) {
       newlaserCloud = false;
 
@@ -712,5 +725,6 @@ int main(int argc, char **argv) {
     rate.sleep();
   }
 
+  if (rclcpp::ok()) rclcpp::shutdown();
   return 0;
 }

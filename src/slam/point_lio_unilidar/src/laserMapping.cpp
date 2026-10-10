@@ -8,6 +8,7 @@
 #include <Python.h>
 #include <so3_math.h>
 #include <Eigen/Core>
+#include <atomic>
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
@@ -269,7 +270,9 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
 
     if (get_time_in_sec(msg->header.stamp) < last_timestamp_lidar)
     {
-        printf("lidar loop back, clear buffer");
+        static rclcpp::Clock warning_clock(RCL_STEADY_TIME);
+        RCLCPP_WARN_THROTTLE(rclcpp::get_logger("pointlio_mapping"), warning_clock, 5000,
+                            "Discarding out-of-order LiDAR stamp (not clearing estimator)");
 
         mtx_buffer.unlock();
         sig_buffer.notify_all();
@@ -484,7 +487,9 @@ void imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr msg_in)
 
     if (timestamp < last_timestamp_imu)
     {
-        printf("imu loop back, clear deque");
+        static rclcpp::Clock warning_clock(RCL_STEADY_TIME);
+        RCLCPP_WARN_THROTTLE(rclcpp::get_logger("pointlio_mapping"), warning_clock, 5000,
+                            "Discarding out-of-order IMU stamp (not clearing estimator)");
 
         mtx_buffer.unlock();
         sig_buffer.notify_all();
@@ -853,10 +858,19 @@ void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
     }
 }
 
-int main(int argc, char **argv)
+int RunMapping()
 {
-    rclcpp::init(argc, argv);
     auto node = rclcpp::Node::make_shared("laserMapping");
+    // A clock epoch reset invalidates the EKF, map and all sensor queues, not
+    // just last_timestamp_*. Exit cleanly; simulation launch respawns this node.
+    std::atomic<bool> time_reset_requested{false};
+    rclcpp::JumpHandler::SharedPtr time_jump_handler;
+    if (node->declare_parameter<bool>("restart_on_time_jump", false)) {
+        rcl_jump_threshold_t threshold{};
+        threshold.min_backward.nanoseconds = -500000000;
+        time_jump_handler = node->get_clock()->create_jump_callback(nullptr,
+            [&time_reset_requested](const rcl_time_jump_t&) { time_reset_requested = true; }, threshold);
+    }
 
     readParameters(node);
     cout << "lidar_type: " << lidar_type << endl << flush;
@@ -967,6 +981,11 @@ int main(int argc, char **argv)
             break;
 
         rclcpp::spin_some(node);
+
+        if (time_reset_requested) {
+            RCLCPP_WARN(node->get_logger(), "[TIME_RESET] restarting Point-LIO with a fresh EKF, map and sensor queues");
+            break;
+        }
 
         if (sync_packages(Measures) == false)
         {
@@ -1494,5 +1513,18 @@ int main(int argc, char **argv)
     fout_out.close();
     fout_imu_pbp.close();
 
+    if (fp) fclose(fp);
+    // Global TF broadcaster must release its DDS writer before the node/context.
+    // All remaining local publishers/subscriptions leave scope before shutdown.
+    tf_br.reset();
+
     return 0;
+}
+
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+    const int result = RunMapping();
+    if (rclcpp::ok()) rclcpp::shutdown();
+    return result;
 }
