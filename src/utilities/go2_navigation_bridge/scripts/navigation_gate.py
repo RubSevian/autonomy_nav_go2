@@ -4,9 +4,14 @@ import math
 ZERO = (0.0, 0.0, 0.0)
 
 class NavigationGate:
-    def __init__(self, mode='stack', command_timeout=.25, sensor_timeout=.5):
+    def __init__(self, mode='stack', command_timeout=.25, sensor_timeout=.5, limits=(.2, .1, .1)):
         if mode not in ('stack', 'command_test'):
             raise ValueError('mode must be stack or command_test')
+        if not all(math.isfinite(x) and x > 0 for x in (command_timeout, sensor_timeout)):
+            raise ValueError('Timeouts must be finite and positive')
+        if len(limits) != 3 or any(not math.isfinite(x) or x <= 0 or x > bound for x,bound in zip(limits,(.2,.1,.1))):
+            raise ValueError('Limits must fit the R3 NAV contract')
+        self.limits = tuple(limits)
         self.mode = mode
         self.command_timeout = command_timeout
         self.sensor_timeout = sensor_timeout
@@ -72,13 +77,13 @@ class NavigationGate:
             self.block_reason = 'cancelled'
         elif not self.localization_ready(now):
             self.block_reason = 'localization_unavailable'
-        elif not self.locomotion_ready or not self.fresh(now, self.locomotion_received, .5):
+        elif not self.locomotion_ready or not self.fresh(now, self.locomotion_received, self.sensor_timeout):
             self.block_reason = 'locomotion_not_active'
         elif self.mode == 'stack' and not self.goal_received:
             self.block_reason = 'new_goal_required'
-        elif self.mode == 'stack' and not (self.active and self.fresh(now, self.active_received, .5)):
+        elif self.mode == 'stack' and not (self.active and self.fresh(now, self.active_received, self.sensor_timeout)):
             self.block_reason = 'planner_inactive'
-        elif self.mode == 'stack' and not self.fresh(now, self.health.get('path'), .5):
+        elif self.mode == 'stack' and not self.fresh(now, self.health.get('path'), self.sensor_timeout):
             self.block_reason = 'path_unavailable'
         elif self.health.get('stop') is None:
             self.block_reason = 'planner_stop'
@@ -93,8 +98,7 @@ class NavigationGate:
             return False
         if len(value) != 3 or not all(math.isfinite(x) for x in value):
             return False
-        limits = (.2, .1, .1)
-        self.request = tuple(max(-limit, min(limit, x)) for x, limit in zip(value, limits))
+        self.request = tuple(max(-limit, min(limit, x)) for x, limit in zip(value, self.limits))
         self.request_received = now
         self.request_header_age = header_age
         return True

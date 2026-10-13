@@ -4,6 +4,7 @@
 #include "utility.h"
 #include "dynamic_graph.h"
 #include "contour_graph.h"
+#include "path_validation.h"
 
 enum ReachVote {
     BLOCK = 0,
@@ -39,6 +40,7 @@ bool is_terrain_associated_ = false;
 bool is_goal_init_;
 NodePtrStack current_graph_;
 bool is_free_nav_goal_;
+FARPathValidation::Status last_path_status_ = FARPathValidation::Status::NO_VALID_PATH;
 
 // momentum planning values
 NodePtrStack recorded_path_;
@@ -142,14 +144,6 @@ public:
 GraphPlanner() = default;
 ~GraphPlanner() = default;
 
-void CancelGoal() {
-    GoalReset();
-    is_goal_init_ = false;
-    is_global_path_init_ = false;
-    recorded_path_.clear();
-    path_momentum_counter_ = 0;
-}
-
 void Init(const rclcpp::Node::SharedPtr nh, const GraphPlannerParams& params);
 
 
@@ -201,6 +195,22 @@ void UpdateGoalNavNodeConnects(const NavNodePtr& goal_ptr);
 */ 
 void UpdateGoal(const Point3D& goal);
 
+// Remove only the active goal and path-memory state.  In particular this does
+// not clear current_graph_, the visibility graph, or any terrain data.
+inline void CancelGoal() {
+    GoalReset();
+    is_goal_init_ = false;
+    is_use_internav_goal_ = false;
+    is_global_path_init_ = false;
+    is_free_nav_goal_ = false;
+    is_terrain_associated_ = false;
+    recorded_path_.clear();
+    next_waypoint_ = Point3D(0,0,0);
+    last_waypoint_dist_ = 0.0f;
+    last_planning_odom_ = Point3D(0,0,0);
+    path_momentum_counter_ = 0;
+}
+
 
 /**
  * @brief Update free terrian grid for re-selecting goal position into free space
@@ -217,7 +227,10 @@ void UpdateFreeTerrainGrid(const Point3D& center,
  * @param goal_ptr current goal node pointer
  * @param is_adjust_height whether or not adjust height of goal -> (False if multi layer planning)
  */
-void ReEvaluateGoalPosition(const NavNodePtr& goal_ptr, const bool& is_adjust_height);
+// The current start must be explicit: a goal can precede the first
+// UpdateGraphTraverability call that populates odom_node_ptr_.
+bool ReEvaluateGoalPosition(const NavNodePtr& goal_ptr, const NavNodePtr& start_ptr,
+                            const bool& is_adjust_height);
 
 /**
  * @brief Reset internal values and containers
@@ -242,6 +255,11 @@ inline void ResetPlannerInternalValues() {
 }
 
 const NavNodePtr& GetGoalNodePtr() const { return goal_node_ptr_;};
+bool IsGoalInFreespace() const { return is_goal_in_freespace_; }
+bool IsTerrainAssociated() const { return is_terrain_associated_; }
+bool IsFreeNavigationGoal() const { return is_free_nav_goal_; }
+const NavNodePtr& GetOdomNodePtr() const { return odom_node_ptr_; }
+const FARPathValidation::Status& GetLastPathStatus() const { return last_path_status_; }
 
 Point3D GetOriginNodePos(const bool& is_adjusted_z) const {
     if (goal_node_ptr_ == NULL) return Point3D(0,0,0);

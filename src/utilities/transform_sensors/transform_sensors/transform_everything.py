@@ -9,8 +9,16 @@ import sensor_msgs_py.point_cloud2 as pc2
 from rclpy.qos import qos_profile_sensor_data
 import numpy as np
 import yaml
+import json
+import time
+from copy import deepcopy
+from std_msgs.msg import String
+from .time_alignment import AlignmentConfig, SensorTimeAlignment
+from .point_records import PointRecords
 
 import os
+import signal
+from rclpy.executors import ExternalShutdownException
 
 
 # Quaternion convention in ROS messages is [x, y, z, w].  Keeping these small
@@ -59,19 +67,25 @@ def quaternion_matrix(quaternion):
 class Repuber(Node):
     def __init__(self):
         super().__init__('sensor_transformer')
-        self.imu_sub = self.create_subscription(Imu, '/utlidar/imu', self.imu_callback, qos_profile_sensor_data)
-        self.cloud_sub = self.create_subscription(PointCloud2, '/utlidar/cloud', self.cloud_callback, qos_profile_sensor_data)
+        def param(name, default):
+            return self.declare_parameter(name, default).value
+        self.imu_sub = self.create_subscription(Imu, param('raw_imu_topic', '/utlidar/imu'), self.imu_callback, qos_profile_sensor_data)
+        self.cloud_sub = self.create_subscription(PointCloud2, param('raw_cloud_topic', '/utlidar/cloud'), self.cloud_callback, qos_profile_sensor_data)
         
-        self.imu_raw_pub = self.create_publisher(Imu, '/utlidar/transformed_raw_imu', 50)
-        self.imu_pub = self.create_publisher(Imu, '/utlidar/transformed_imu', 50)
-        self.cloud_pub = self.create_publisher(PointCloud2, '/utlidar/transformed_cloud', 50)
+        self.imu_raw_pub = self.create_publisher(Imu, param('raw_imu_output_topic', '/utlidar/transformed_raw_imu'), 50)
+        self.imu_pub = self.create_publisher(Imu, param('legacy_imu_output_topic', '/utlidar/transformed_imu'), 50)
+        self.cloud_pub = self.create_publisher(PointCloud2, param('cloud_topic', '/utlidar/transformed_cloud'), 50)
 
         self.imu_stationary_list = []
         
-        self.time_stamp_offset = 0
-        self.time_stamp_offset_set = False
+        self.time_alignment = SensorTimeAlignment(AlignmentConfig(
+            **{key: param('time_' + key, value) for key, value in vars(AlignmentConfig()).items()}))
+        self.time_status_pub = self.create_publisher(String, param('time_status_topic', '/utlidar/time_alignment'), 1)
+        self.create_timer(param('time_status_period_s', 1.0), self.publish_time_status)
+        self._time_state = self.time_alignment.state
         
-        self.cam_offset = 0.046825
+        self.cam_offset = param('cam_offset_m', 0.046825)
+        self.imu_tilt = param('imu_tilt_deg', 15.1) / 180 * 3.1415926
 
         self.declare_parameter('calibration_path', '')
         calibration_path = self.get_parameter('calibration_path').value
@@ -113,7 +127,7 @@ class Repuber(Node):
         self.body2cloud_trans.transform.translation.x = 0.0
         self.body2cloud_trans.transform.translation.y = 0.0
         self.body2cloud_trans.transform.translation.z = 0.0
-        quat = quaternion_from_euler(0, 2.87820258505555555556, 0)
+        quat = quaternion_from_euler(0, param('cloud_pitch_rad', 2.87820258505555555556), 0)
         self.body2cloud_trans.transform.rotation.x = quat[0]
         self.body2cloud_trans.transform.rotation.y = quat[1]
         self.body2cloud_trans.transform.rotation.z = quat[2]
@@ -126,18 +140,37 @@ class Repuber(Node):
         self.body2imu_trans.transform.translation.x = 0.0
         self.body2imu_trans.transform.translation.y = 0.0
         self.body2imu_trans.transform.translation.z = 0.0
-        quat = quaternion_from_euler(0, 2.87820258505555555556, 3.14159265358)
+        quat = quaternion_from_euler(0, param('imu_pitch_rad', 2.87820258505555555556), param('imu_yaw_rad', 3.14159265358))
         self.body2imu_trans.transform.rotation.x = quat[0]
         self.body2imu_trans.transform.rotation.y = quat[1]
         self.body2imu_trans.transform.rotation.z = quat[2]
         self.body2imu_trans.transform.rotation.w = quat[3]
+        # Geometry and calibration are constructor-owned for this session.
+        self._cloud_rotation = quaternion_matrix(np.array([
+            self.body2cloud_trans.transform.rotation.x,
+            self.body2cloud_trans.transform.rotation.y,
+            self.body2cloud_trans.transform.rotation.z,
+            self.body2cloud_trans.transform.rotation.w,
+        ]))
+        self._cloud_translation = np.array([
+            self.body2cloud_trans.transform.translation.x,
+            self.body2cloud_trans.transform.translation.y,
+            self.body2cloud_trans.transform.translation.z,
+        ])
+        self._imu_rotation = np.array([
+            self.body2imu_trans.transform.rotation.x,
+            self.body2imu_trans.transform.rotation.y,
+            self.body2imu_trans.transform.rotation.z,
+            self.body2imu_trans.transform.rotation.w,
+        ])
+        self._imu_cos, self._imu_sin = np.cos(self.imu_tilt), np.sin(self.imu_tilt)
         
-        self.x_filter_min = -0.7
-        self.x_filter_max = -0.1
-        self.y_filter_min = -0.3
-        self.y_filter_max = 0.3
-        self.z_filter_min = -0.6 - self.cam_offset
-        self.z_filter_max = 0 - self.cam_offset
+        minimum = param('self_filter_min_m', [-0.7, -0.3, -0.6])
+        maximum = param('self_filter_max_m', [-0.1, 0.3, 0.0])
+        self.x_filter_min, self.y_filter_min, self.z_filter_min = minimum
+        self.x_filter_max, self.y_filter_max, self.z_filter_max = maximum
+        self.z_filter_min -= self.cam_offset
+        self.z_filter_max -= self.cam_offset
 
     def is_in_filter_box(self, point):
         # Check if the point is in the filter box
@@ -150,36 +183,38 @@ class Repuber(Node):
         return is_in_box
 
     def cloud_callback(self, data):
-        if not self.time_stamp_offset_set:
-            self.time_stamp_offset = self.get_clock().now().nanoseconds - Time.from_msg(data.header.stamp).nanoseconds
-            self.time_stamp_offset_set = True
-                
+        receive_ros_ns = self.get_clock().now().nanoseconds
+        receive_mono_ns = time.monotonic_ns()
         points = pc2.read_points(data)
+        if points.dtype.names is None or not {'x', 'y', 'z', 'time'}.issubset(points.dtype.names):
+            self.get_logger().error('Dropping cloud with no x/y/z/time point fields')
+            return
+        point_times = points['time']
+        if not np.isfinite(point_times).all() or (point_times < 0).any():
+            self.get_logger().error('Dropping cloud with invalid relative point times')
+            return
+        span_ns = int(np.ceil(float(point_times.max()) * 1e9)) if points.size else 0
+        mapped_ns = self.map_sensor_stamp('cloud', data.header.stamp, receive_ros_ns, receive_mono_ns, span_ns)
+        if mapped_ns is None:
+            return
+        header = deepcopy(data.header)
+        header.stamp = Time(nanoseconds=mapped_ns).to_msg()
+        header.frame_id = 'body'
         if points.size == 0:
-            elevated_cloud = pc2.create_cloud(data.header, data.fields, [])
-            elevated_cloud.header.frame_id = 'body'
-            elevated_cloud.header.stamp = Time(
-                nanoseconds=Time.from_msg(data.header.stamp).nanoseconds + self.time_stamp_offset
-            ).to_msg()
+            elevated_cloud = pc2.create_cloud(header, data.fields, [], point_step=data.point_step)
             self.cloud_pub.publish(elevated_cloud)
             return
-        if points.dtype.names is None or not {'x', 'y', 'z'}.issubset(points.dtype.names):
-            self.get_logger().error('Dropping cloud with no x/y/z point fields')
-            return
 
-        transform = self.body2cloud_trans.transform
-        mat = quaternion_matrix(np.array([
-            transform.rotation.x, transform.rotation.y,
-            transform.rotation.z, transform.rotation.w,
-        ]))
-        translation = np.array([transform.translation.x, transform.translation.y, transform.translation.z])
-        
         # Keep the structured PointCloud2 dtype intact: LiDAR ring/time fields
         # must not be coerced to a common float array by NumPy.
-        transformed_points = points.copy()
+        # Copy complete records. A structured NumPy copy/index operation only
+        # copies named fields and can leave padding uninitialized. Unitree/PCL
+        # records include homogeneous-coordinate bytes outside PointFields.
+        records = PointRecords(points)
+        transformed_points = records.points
         xyz = np.column_stack((points['x'], points['y'], points['z']))
         valid_xyz = np.isfinite(xyz).all(axis=1)
-        xyz = xyz @ mat.T + translation
+        xyz = xyz @ self._cloud_rotation.T + self._cloud_translation
         xyz[:, 2] -= self.cam_offset
         transformed_points['x'] = xyz[:, 0]
         transformed_points['y'] = xyz[:, 1]
@@ -192,14 +227,32 @@ class Repuber(Node):
             (transformed_points['z'] > self.z_filter_min) &
             (transformed_points['z'] < self.z_filter_max)
         )
-        transformed_points = transformed_points[valid_xyz & ~in_filter_box]
+        transformed_points = records.select(valid_xyz & ~in_filter_box)
         
-        elevated_cloud = pc2.create_cloud(data.header, data.fields, transformed_points)
-        elevated_cloud.header.stamp = Time(nanoseconds=Time.from_msg(elevated_cloud.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
-        elevated_cloud.header.frame_id = "body"
+        # read_points retains the input record size, including trailing padding.
+        # Unitree points can occupy 32 bytes even when the last field ends at 28.
+        elevated_cloud = pc2.create_cloud(
+            header, data.fields, transformed_points, point_step=data.point_step)
         elevated_cloud.is_dense = bool(data.is_dense and valid_xyz.all())
 
         self.cloud_pub.publish(elevated_cloud)
+
+    def publish_time_status(self):
+        self.time_status_pub.publish(String(data=json.dumps(self.time_alignment.status())))
+
+    def map_sensor_stamp(self, stream, stamp, receive_ros_ns, receive_mono_ns, span_ns=0):
+        source_ns = stamp.sec * 1000000000 + stamp.nanosec
+        if stamp.sec < 0 or not 0 <= stamp.nanosec < 1000000000:
+            source_ns = 0
+        mapped = self.time_alignment.map_stamp(stream, source_ns, receive_ros_ns, receive_mono_ns, span_ns)
+        if self.time_alignment.state != self._time_state:
+            self._time_state = self.time_alignment.state
+            message = 'Sensor time alignment: ' + json.dumps(self.time_alignment.status())
+            if self._time_state == 'FAULT':
+                self.get_logger().error(message + '; restart localization after checking clocks')
+            else:
+                self.get_logger().info(message)
+        return mapped
             
     def transform_vector(self, vector, rotation):
         # Transform a vector using a given quaternion rotation
@@ -217,34 +270,22 @@ class Repuber(Node):
 
 
     def imu_callback(self, data):    
-        # Both streams use the same offset.  Dropping early IMU packets avoids
-        # mixing two time bases before the first LiDAR stamp establishes it.
-        if not self.time_stamp_offset_set:
+        mapped_ns = self.map_sensor_stamp('imu', data.header.stamp,
+                                          self.get_clock().now().nanoseconds, time.monotonic_ns())
+        if mapped_ns is None:
             return
-        trans = np.zeros(3)
-        trans[0] = self.body2imu_trans.transform.translation.x
-        trans[1] = self.body2imu_trans.transform.translation.y
-        trans[2] = self.body2imu_trans.transform.translation.z
-        
-        rot = np.zeros(4)
-        rot[0] = self.body2imu_trans.transform.rotation.x
-        rot[1] = self.body2imu_trans.transform.rotation.y
-        rot[2] = self.body2imu_trans.transform.rotation.z
-        rot[3] = self.body2imu_trans.transform.rotation.w
-        
         transformed_orientation = quaternion_multiply(
-            rot, [data.orientation.x, data.orientation.y, data.orientation.z, data.orientation.w]
+            self._imu_rotation, [data.orientation.x, data.orientation.y, data.orientation.z, data.orientation.w]
         )
         
         x = data.angular_velocity.x
         y = -data.angular_velocity.y
         z = -data.angular_velocity.z
         
-        theta = 15.1 / 180 * 3.1415926
 
-        x2 = np.cos(theta) * x - np.sin(theta) * z
+        x2 = self._imu_cos * x - self._imu_sin * z
         y2 = y
-        z2 = np.sin(theta) * x + np.cos(theta) * z
+        z2 = self._imu_sin * x + self._imu_cos * z
 
         x2 -= self.ang_bias_x
         y2 -= self.ang_bias_y
@@ -265,9 +306,9 @@ class Repuber(Node):
         acc_y = -data.linear_acceleration.y
         acc_z = -data.linear_acceleration.z
         
-        acc_x2 = np.cos(theta) * acc_x - np.sin(theta) * acc_z
+        acc_x2 = self._imu_cos * acc_x - self._imu_sin * acc_z
         acc_y2 = acc_y
-        acc_z2 = np.sin(theta) * acc_x + np.cos(theta) * acc_z
+        acc_z2 = self._imu_sin * acc_x + self._imu_cos * acc_z
         transformed_linear_acceleration = Vector3()
         transformed_linear_acceleration.x = acc_x2 - self.acc_bias_x
         transformed_linear_acceleration.y = acc_y2 - self.acc_bias_y
@@ -275,7 +316,7 @@ class Repuber(Node):
         
 
         transformed_imu = Imu()
-        transformed_imu.header.stamp = data.header.stamp
+        transformed_imu.header.stamp = Time(nanoseconds=mapped_ns).to_msg()
         transformed_imu.header.frame_id = 'body'
         transformed_imu.orientation.x = transformed_orientation[0]
         transformed_imu.orientation.y = transformed_orientation[1]
@@ -283,8 +324,6 @@ class Repuber(Node):
         transformed_imu.orientation.w = transformed_orientation[3]
         transformed_imu.angular_velocity = transformed_angular_velocity
         transformed_imu.linear_acceleration = transformed_linear_acceleration
-        
-        transformed_imu.header.stamp = Time(nanoseconds=Time.from_msg(transformed_imu.header.stamp).nanoseconds + self.time_stamp_offset).to_msg()
         
         self.imu_raw_pub.publish(transformed_imu)
         
@@ -304,9 +343,12 @@ def main(args=None):
     transform_node = Repuber()
     try:
         rclpy.spin(transform_node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         transform_node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 if __name__ == '__main__':
     main()

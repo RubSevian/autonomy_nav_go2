@@ -64,7 +64,7 @@ void DPVisualizer::VizPoint3D(const Point3D& point,
 void DPVisualizer::VizPath(const NodePtrStack& global_path, const bool& is_free_nav) {
     Marker path_marker;
     path_marker.type = Marker::LINE_STRIP;
-    const VizColor color = is_free_nav ? VizColor::GREEN : VizColor::BLUE;
+    const VizColor color = is_free_nav ? VizColor::GREEN : VizColor::EMERALD;  // BLUE is reserved for MuJoCo ground truth.
     this->SetMarker(nh_, color, "global_path", 0.75f, 0.9f, path_marker);
     geometry_msgs::msg::Point geo_p;
     for (const auto& node_ptr : global_path) {
@@ -72,6 +72,25 @@ void DPVisualizer::VizPath(const NodePtrStack& global_path, const bool& is_free_
         path_marker.points.push_back(geo_p);
     }
     viz_path_pub_->publish(path_marker);
+}
+
+void DPVisualizer::ClearNavigationVisuals() {
+    // /viz_path_topic owns the global route marker.
+    Marker path_marker;
+    this->SetMarker(nh_, VizColor::EMERALD, "global_path", 0.75f, 0.9f, path_marker);
+    path_marker.action = Marker::DELETE;
+    viz_path_pub_->publish(path_marker);
+
+    // Goal-related points are carried by /viz_node_topic.  Delete exact
+    // namespace/id pairs so the visibility graph and terrain remain intact.
+    MarkerArray delete_markers;
+    for (const char* ns : {"original_goal", "waypoint", "free_goal"}) {
+        Marker marker;
+        this->SetMarker(nh_, VizColor::WHITE, ns, 1.0f, 1.0f, marker);
+        marker.action = Marker::DELETE;
+        delete_markers.markers.push_back(marker);
+    }
+    viz_node_pub_->publish(delete_markers);
 }
 
 void DPVisualizer::VizViewpointExtend(const NavNodePtr& ori_nav_ptr, const Point3D& extend_point) {

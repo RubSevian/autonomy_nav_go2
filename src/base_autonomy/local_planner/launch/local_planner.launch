@@ -4,23 +4,78 @@
   <arg name="sensorOffsetY" default="0.0"/>
   <arg name="cameraOffsetZ" default="0.0"/>
   <arg name="twoWayDrive" default="false"/>
+  <arg name="maxYawRate" default="28.0"/>
+  <arg name="maxAccel" default="2.0"/>
   <arg name="maxSpeed" default="1.0"/>
   <arg name="autonomyMode" default="false"/>
   <arg name="autonomySpeed" default="1.0"/>
   <arg name="joyToSpeedDelay" default="2.0"/>
   <arg name="goalCloseDis" default="0.4"/>
   <arg name="goalX" default="0.0"/>
+  <arg name="searchRadius" default="0.55"/>
+  <arg name="vehicleLength" default="0.62"/>
+  <arg name="vehicleWidth" default="0.40"/>
+  <arg name="goalClearRange" default="0.50"/>
+  <arg name="stage4dGoalCloseDis" default="0.40"/>
+  <arg name="stopDisThre" default="0.30"/>
+  <arg name="slowDwnDisThre" default="0.75"/>
   <arg name="goalY" default="0.0"/>
   <arg name="is_real_robot" default="true"/>
   <arg name="sendSportCommand" default="false"/>
   <arg name="odomTimeoutSec" default="0.5"/>
   <arg name="pathTimeoutSec" default="0.5"/>
-  <arg name="publishBaseTf" default="true"/>
-
-  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
+  <arg name="allowStaticPath" default="false"/>
+  <!-- Experimental only. Unset environment preserves the baseline. -->
+  <arg name="enableNarrowPassageMode" default="false"/>
+  <arg name="narrowFootprintLength" default="0.62"/>
+  <arg name="enableOrientationAwareCheck" default="false"/>
+  <arg name="enableNarrowRecoveredSelection" default="false"/>
+  <arg name="narrowFootprintWidth" default="0.40"/>
+  <arg name="narrowLongitudinalMargin" default="0.02"/>
+  <arg name="narrowLateralMargin" default="0.02"/>
+  <arg name="narrowEnterYawToleranceDeg" default="6.0"/>
+  <arg name="narrowContinueYawToleranceDeg" default="9.0"/>
+  <arg name="narrowStopYawToleranceDeg" default="12.0"/>
+  <arg name="narrowRecoveryYawLimitDeg" default="20.0"/>
+  <arg name="narrowSpeedScale" default="0.4"/>
+  <arg name="narrowMaxTangentDeltaDeg" default="12.0"/>
+  <arg name="enableTemporalPathStabilization" default="true"/>
+  <arg name="pathSwitchScoreMargin" default="0.15"/>
+  <arg name="safePathSwitchMinIntervalSec" default="0.50"/>
+  <arg name="followerMotionModel" default="holonomic"/>
+  <arg name="unicycleRotateEnterDeg" default="55.0"/>
+  <arg name="unicycleRotateExitDeg" default="35.0"/>
+  <arg name="unicycleRotateGain" default="1.5"/>
+  <arg name="narrowMaxCurvatureRadPerM" default="1.0"/>
+  <arg name="narrowAlignmentConfirmCycles" default="5"/>
+  <arg name="narrowRealignTimeoutSec" default="2.0"/>
+  <!-- Keep original real-robot TF behavior by default. Stage4D may disable
+       only a transform that it already publishes authoritatively. -->
+  <arg name="publishSensorToVehicleTf" default="true"/>
+  <arg name="publishSensorToCameraTf" default="true"/>
+  <node pkg="local_planner" exec="localPlanner" name="localPlanner" output="screen">
     <param name="pathFolder" value="$(find-pkg-share local_planner)/paths" />
-    <param name="vehicleLength" value="0.3" />
-    <param name="vehicleWidth" value="0.7" />
+    <!-- Go2+RARS01 HOME envelope; may change with measured hardware dimensions.
+         Nominal length 0.62 / width 0.40 m retained from Sim2Sim.
+         Static collision envelope in vehicle/base frame (m).
+         footprint diagnostic.  They are not the translational correspondence
+         radius while checkRotObstacle=false. -->
+    <param name="vehicleLength" value="$(var vehicleLength)" />
+    <param name="enableOrientationAwareCheck" value="$(var enableOrientationAwareCheck)" />
+    <param name="enableNarrowRecoveredSelection" value="$(var enableNarrowRecoveredSelection)" />
+    <param name="vehicleWidth" value="$(var vehicleWidth)" />
+    <param name="enableNarrowPassageMode" value="$(var enableNarrowPassageMode)" />
+    <param name="narrowFootprintLength" value="$(var narrowFootprintLength)" />
+    <param name="narrowFootprintWidth" value="$(var narrowFootprintWidth)" />
+    <param name="narrowLongitudinalMargin" value="$(var narrowLongitudinalMargin)" />
+    <param name="narrowLateralMargin" value="$(var narrowLateralMargin)" />
+    <param name="narrowEnterYawToleranceDeg" value="$(var narrowEnterYawToleranceDeg)" />
+    <param name="narrowContinueYawToleranceDeg" value="$(var narrowContinueYawToleranceDeg)" />
+    <param name="narrowStopYawToleranceDeg" value="$(var narrowStopYawToleranceDeg)" />
+    <param name="narrowRecoveryYawLimitDeg" value="$(var narrowRecoveryYawLimitDeg)" />
+    <param name="narrowSpeedScale" value="$(var narrowSpeedScale)" />
+    <param name="narrowMaxTangentDeltaDeg" value="$(var narrowMaxTangentDeltaDeg)" />
+    <param name="narrowMaxCurvatureRadPerM" value="$(var narrowMaxCurvatureRadPerM)" />
     <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
     <param name="sensorOffsetY" value="$(var sensorOffsetY)" />
     <param name="twoWayDrive" value="$(var twoWayDrive)" />
@@ -42,24 +97,32 @@
     <param name="dirWeight" value="0.02" />
     <param name="dirThre" value="90.0" />
     <param name="dirToVehicle" value="false" />
+    <!-- Collision-library scale.  searchRadius(0.55) * 0.75 = 0.4125 m,
+         which covers the 0.369 m static circumscribed robot radius.  Do not
+         fall back to 0.50: its 0.275 m correspondence radius is undersized. -->
     <param name="pathScale" value="0.75" />
-    <param name="minPathScale" value="0.5" />
+    <param name="pathRangeStep" value="0.5" />
+    <param name="searchRadius" value="$(var searchRadius)" />
+    <param name="minPathScale" value="0.75" />
     <param name="pathScaleStep" value="0.25" />
     <param name="pathScaleBySpeed" value="true" />
     <param name="minPathRange" value="1.0" />
-    <param name="pathRangeStep" value="0.5" />
+    <param name="goalClearRange" value="$(var goalClearRange)" />
+    <param name="goalCloseDis" value="$(var goalCloseDis)" />
     <param name="pathRangeBySpeed" value="true" />
     <param name="pathCropByGoal" value="true" />
     <param name="autonomyMode" value="$(var autonomyMode)" />
     <param name="autonomySpeed" value="$(var autonomySpeed)" />
     <param name="joyToSpeedDelay" value="$(var joyToSpeedDelay)" />
     <param name="joyToCheckObstacleDelay" value="5.0" />
-    <param name="goalClearRange" value="0.5" />
     <param name="goalX" value="$(var goalX)" />
     <param name="goalY" value="$(var goalY)" />
+    <param name="enableTemporalPathStabilization" value="$(var enableTemporalPathStabilization)" />
+    <param name="pathSwitchScoreMargin" value="$(var pathSwitchScoreMargin)" />
+    <param name="safePathSwitchMinIntervalSec" value="$(var safePathSwitchMinIntervalSec)" />
   </node>
 
-  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="local_planner" exec="pathFollower" name="pathFollower" output="screen">
+  <node pkg="local_planner" exec="pathFollower" name="pathFollower" output="screen">
     <param name="sensorOffsetX" value="$(var sensorOffsetX)" />
     <param name="sensorOffsetY" value="$(var sensorOffsetY)" />
     <param name="pubSkipNum" value="1" />
@@ -67,16 +130,17 @@
     <param name="lookAheadDis" value="0.5" />
     <param name="yawRateGain" value="1.5" />
     <param name="stopYawRateGain" value="1.5" />
-    <!-- 28 deg/s = 0.489 rad/s, within the RL policy yaw training range. -->
-    <param name="maxYawRate" value="28.0" />
+    <!-- Real NAV profile passes yaw limit explicitly, in degrees/s. -->
+    <param name="maxYawRate" value="$(var maxYawRate)" />
     <param name="maxSpeed" value="$(var maxSpeed)" />
-    <param name="maxAccel" value="2.0" />
+    <param name="inclThre" value="45.0" />
+    <param name="stopDisThre" value="$(var stopDisThre)" />
+    <param name="slowDwnDisThre" value="$(var slowDwnDisThre)" />
+    <param name="maxAccel" value="$(var maxAccel)" />
     <param name="switchTimeThre" value="1.0" />
     <param name="dirDiffThre" value="0.4" />
     <param name="omniDirDiffThre" value="1.5" />
     <param name="noRotSpeed" value="10.0"/>
-    <param name="stopDisThre" value="0.3" />
-    <param name="slowDwnDisThre" value="0.75" />
     <param name="useInclRateToSlow" value="false" />
     <param name="inclRateThre" value="120.0" />
     <param name="slowRate1" value="0.25" />
@@ -84,24 +148,29 @@
     <param name="slowTime1" value="2.0" />
     <param name="slowTime2" value="2.0" />
     <param name="useInclToStop" value="false" />
-    <param name="inclThre" value="45.0" />
+    <param name="goalCloseDis" value="$(var stage4dGoalCloseDis)"/>
     <param name="stopTime" value="5.0" />
     <param name="noRotAtStop" value="false" />
     <param name="noRotAtGoal" value="true" />
     <param name="autonomyMode" value="$(var autonomyMode)" />
     <param name="autonomySpeed" value="$(var autonomySpeed)" />
     <param name="joyToSpeedDelay" value="$(var joyToSpeedDelay)" />
-    <param name="goalCloseDis" value="$(var goalCloseDis)"/>
     <param name="is_real_robot" value="$(var is_real_robot)"/>
     <param name="sendSportCommand" value="$(var sendSportCommand)"/>
+    <param name="enableNarrowPassageMode" value="$(var enableNarrowRecoveredSelection)"/>
     <param name="odomTimeoutSec" value="$(var odomTimeoutSec)"/>
     <param name="pathTimeoutSec" value="$(var pathTimeoutSec)"/>
+    <param name="allowStaticPath" value="$(var allowStaticPath)"/>
+    <param name="narrowAlignmentConfirmCycles" value="$(var narrowAlignmentConfirmCycles)"/>
+    <param name="narrowRealignTimeoutSec" value="$(var narrowRealignTimeoutSec)"/>
+    <param name="followerMotionModel" value="$(var followerMotionModel)"/>
+    <param name="unicycleRotateEnterDeg" value="$(var unicycleRotateEnterDeg)"/>
+    <param name="unicycleRotateExitDeg" value="$(var unicycleRotateExitDeg)"/>
+    <param name="unicycleRotateGain" value="$(var unicycleRotateGain)"/>
   </node>
 
-  <group if="$(var publishBaseTf)">
-    <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
-  </group>
+  <node if="$(var publishSensorToVehicleTf)" pkg="tf2_ros" exec="static_transform_publisher" name="vehicleTransPublisher" args="-$(var sensorOffsetX) -$(var sensorOffsetY) 0 0 0 0 /sensor /vehicle"/>
 
-  <node ros_args="--log-level rmw_cyclonedds_cpp:=error" pkg="tf2_ros" exec="static_transform_publisher" name="sensorTransPublisher" args="0 0 $(var cameraOffsetZ) -1.5707963 0 -1.5707963 /sensor /camera"/>
+  <node if="$(var publishSensorToCameraTf)" pkg="tf2_ros" exec="static_transform_publisher" name="sensorTransPublisher" args="0 0 $(var cameraOffsetZ) -1.5707963 0 -1.5707963 /sensor /camera"/>
   
 </launch>

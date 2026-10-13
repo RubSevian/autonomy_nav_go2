@@ -83,7 +83,7 @@ def service(name):
     assert f.done() and f.result().success,name
 try:
     startup_deadline=time.monotonic()+5
-    while (not ready or not ready[-1]['navigation_ready']) and time.monotonic()<startup_deadline:
+    while (not ready or not ready[-1]['navigation_ready'] or not out) and time.monotonic()<startup_deadline:
         pump(.2,active=False)
     assert ready and ready[-1]['navigation_ready'] and not ready[-1]['command_enabled'], (ready[-1:] , diagnostics[-1:])
     assert out and out[-1]==(0.,0.,0.)

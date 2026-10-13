@@ -1,0 +1,321 @@
+# ЕДИНСТВЕННЫЙ рабочий профиль real_navigation.launch.py, Jetson/Jazzy.
+# Редактировать SOURCE; запускать с profile_path:=.../config/real_navigation.yaml.
+# Числа читаются при новом launch; изменения кода требуют сборки.
+# Legacy XML/YAML других пакетов не читаются этим launch, оставлены для отдельных запусков.
+# kp/kd, позы и policy ног — отдельный controller profile.
+# Отдельный Sport-калибратор запускается imu_calibration.launch.py; NAV его не запускает.
+
+calibration:
+  rotation_speed_rps: 0.7  # Скорость поворота Sport-теста, рад/с ≈40°/с; вращение с15 до35с, vx=vy=0.
+
+# Геометрия HOME; уточнить после физических измерений.
+robot:
+  length_m: 0.62  # Длина Go2 + HOME, м; может измениться после измерения.
+  width_m: 0.4  # Ширина Go2 + HOME, м; может измениться после измерения.
+  sensor_offset_x_m: 0.3  # Начало sensor относительно vehicle по X, м; прежнее real значение, не новое измерение.
+  sensor_offset_y_m: 0.0  # Начало sensor относительно vehicle по Y, м.
+
+# Общие localPlanner/pathFollower параметры без дублирования.
+local:
+  search_radius_m: 0.55  # Радиус collision library до умножения на path_scale, м.
+  path_scale: 0.75  # Масштаб готовой библиотеки путей; текущий набор требует 0.75.
+  max_speed_mps: 0.2  # Максимальная поступательная скорость follower и autonomySpeed local nodes, м/с.
+  max_yaw_rate_rps: 0.1  # Максимальный yaw follower, рад/с; launch переводит в град/с.
+  max_accel_mps2: 2.0  # Ограничение изменения поступательной скорости follower, м/с².
+  goal_tolerance_m: 0.25  # Единый XY радиус достижения цели FAR/local/follower/bridge, м.
+  stop_distance_m: 0.225  # Дистанция полной остановки follower, м; меньше goal_tolerance_m.
+  slow_distance_m: 0.75  # Дистанция начала замедления, м.
+  follower_motion_model: holonomic  # holonomic = vx/vy/wz; unicycle = без бокового хода.
+  narrow_passage: false  # Legacy experimental narrow flag localPlanner.
+  orientation_aware: false  # Experimental проверка ориентированного прямоугольного footprint.
+  narrow_recovered_selection: false  # Experimental выбор narrow путей; включает narrow follower.
+
+# NAV clamp, свежесть и период диагностики.
+bridge:
+  vx_limit: 0.2  # Финальный clamp NAV по X, м/с; максимум контракта R3 0.20.
+  vy_limit: 0.1  # Финальный clamp NAV по Y, м/с; максимум контракта R3 0.10.
+  wz_limit: 0.1  # Финальный clamp NAV yaw, рад/с; максимум контракта R3 0.10.
+  command_timeout_s: 0.25  # Максимальный полный возраст команды, с; верхний контракт R3 0.25.
+  sensor_timeout_s: 0.5  # Максимальный возраст sensor/odom/path/TF/heartbeat/locomotion status, с.
+  goal_dwell_s: 0.5  # Непрерывное нахождение внутри local goal tolerance до SUCCEEDED, с.
+  tick_period_s: 0.02  # Период envelope readiness/скорости bridge, с; 0.02 = 50 Гц.
+  status_period_s: 0.2  # Период JSON-статуса bridge, с; 0.20 = 5 Гц.
+  tf_check_period_s: 0.2  # Период сверки TF с odometry, с.
+  tf_pair_history_s: 1.0  # Временной горизонт odometry/TF, с; не меньше sensor_timeout_s; НЕ продлевает свежесть.
+  tf_pair_max_samples: 2048  # Предел компактных pose-записей НА КАЖДЫЙ поток, включая версии с одинаковым stamp.
+  tf_pair_position_tolerance_m: 0.001  # Допуск max(|dx|,|dy|,|dz|) одной оценки odometry/TF, м; не точность стояния робота.
+  tf_pair_quaternion_tolerance: 0.001  # Допуск max ошибки компонент quaternion с учётом q≡−q; НЕ радианы.
+  graph_check_period_s: 0.2  # Период проверки единственного FAR heartbeat owner, с.
+  far_status_timeout_s: 1.5  # Максимальный возраст ответа FAR о цели, с.
+  cancel_timeout_s: 1.0  # Ожидание FAR cancel service перед повтором, с.
+  cancel_retry_s: 0.5  # Пауза перед повтором FAR cancel, с.
+
+# Реальные LiDAR/IMU; измеренные восемь bias/projection остаются в calibration_path.
+sensors:
+  raw_cloud_topic: /utlidar/cloud  # Вход PointCloud2 робота; NAV сам драйвер не запускает.
+  raw_imu_topic: /utlidar/imu  # Вход Imu робота; этот же топик читает отдельный калибратор.
+  cloud_topic: /utlidar/transformed_cloud  # Выход облака body; вход Point-LIO и bridge.
+  raw_imu_output_topic: /utlidar/transformed_raw_imu  # Калиброванный IMU С УСКОРЕНИЕМ; вход Point-LIO/bridge.
+  legacy_imu_output_topic: /utlidar/transformed_imu  # Legacy IMU с обнулённым ускорением; НЕ вход Point-LIO.
+  time_status_topic: /utlidar/time_alignment  # Диагностика общего clock alignment; WARMUP/LOCKED/FAULT.
+  time_warmup_s: 2.0  # Стартовое окно оценки сдвига часов без публикации cloud/IMU, с.
+  time_margin_s: 0.02  # Запас к минимальному receive−measurement_end, с; не измеренная задержка сети.
+  time_max_age_s: 0.5  # Предел возраста начала измерения после mapping, с; stale пакеты отбрасываются.
+  time_clock_jump_s: 0.1  # Допустимое расхождение ROS/monotonic приращений, с; больше → FAULT до restart.
+  time_max_scan_duration_s: 0.2  # Максимальный относительный time точки в cloud, с.
+  time_min_cloud_samples: 5  # Минимум cloud samples до фиксации общего offset.
+  time_min_imu_samples: 100  # Минимум IMU samples до фиксации общего offset.
+  time_status_period_s: 1.0  # Период небольшой JSON-диагностики clock alignment, с.
+  cam_offset_m: 0.046825  # Прежний сдвиг облака вниз после поворота, м.
+  cloud_pitch_rad: 2.8782025850555555  # Pitch LiDAR cloud→body, рад; прежняя геометрия.
+  imu_pitch_rad: 2.8782025850555555  # Pitch поворота IMU orientation, рад.
+  imu_yaw_rad: 3.14159265358  # Yaw поворота IMU orientation, рад.
+  imu_tilt_deg: 15.1  # Наклон gyro/accel, град; должен совпадать с калибратором 15.1.
+  self_filter_min_m: [-0.7, -0.3, -0.6]  # Нижние XYZ границы удаления корпуса, м; Z до вычитания cam_offset.
+  self_filter_max_m: [-0.1, 0.3, 0.0]  # Верхние XYZ границы удаления корпуса, м; Z до вычитания cam_offset.
+
+# Остальные ROS-параметры по именам узлов. Общие поля выше здесь не дублировать.
+nodes:
+  # Выбор local пути и obstacle/experimental narrow.
+  localPlanner:
+    twoWayDrive: false  # Разрешить переключение движения вперёд/назад.
+    laserVoxelSize: 0.05  # Voxel registered scan, м.
+    terrainVoxelSize: 0.2  # Voxel локального terrain, м.
+    useTerrainAnalysis: true  # Планировать по terrain_map вместо registered_scan.
+    checkObstacle: true  # Проверять препятствия при выборе пути.
+    checkRotObstacle: false  # Проверять footprint при вращении.
+    adjacentRange: 3.0  # Радиус используемых близких точек, м.
+    obstacleHeightThre: 0.3  # Высота obstacle-точки terrain, м.
+    groundHeightThre: 0.1  # Порог высоты свободной поверхности, м.
+    costHeightThre: 0.1  # Порог высоты для стоимости пути, м.
+    costScore: 0.02  # Минимальный вес пути при учёте cost.
+    useCost: false  # Учитывать стоимость поверхности.
+    pointPerPathThre: 2  # Число obstacle hits для блокировки пути.
+    minRelZ: -0.5  # Нижняя высота точек относительно odometry origin, м.
+    maxRelZ: 0.25  # Верхняя высота точек относительно odometry origin, м.
+    dirWeight: 0.02  # Вес отклонения направления в score.
+    dirThre: 90.0  # Порог отклонения направления кандидата, град.
+    narrowLongitudinalMargin: 0.02  # Запас footprint по длине, м.
+    narrowLateralMargin: 0.02  # Запас footprint по ширине, м.
+    narrowEnterYawToleranceDeg: 6.0  # Ошибка курса для входа narrow, град.
+    narrowContinueYawToleranceDeg: 9.0  # Ошибка курса для продолжения narrow, град.
+    narrowStopYawToleranceDeg: 12.0  # Ошибка курса для остановки narrow, град.
+    narrowSpeedScale: 0.4  # Множитель скорости narrow.
+    narrowMaxTangentDeltaDeg: 12.0  # Изменение касательной narrow пути, град.
+    narrowMaxCurvatureRadPerM: 1.0  # Максимальная кривизна narrow, рад/м.
+    narrowRecoveryYawLimitDeg: 20.0  # Допустимый поворот narrow recovery, град.
+    dirToVehicle: false  # Оценивать направление относительно vehicle вместо цели.
+    pathScaleStep: 0.25  # Шаг изменения масштаба поиска; минимум берётся из local.path_scale.
+    pathScaleBySpeed: true  # Связывать масштаб пути со скоростью.
+    minPathRange: 1.0  # Минимальный горизонт пути, м.
+    pathRangeStep: 0.5  # Шаг сокращения горизонта пути, м.
+    pathRangeBySpeed: true  # Связывать горизонт пути со скоростью.
+    pathCropByGoal: true  # Обрезать путь расстоянием до цели.
+    enableTemporalPathStabilization: true  # Удерживать текущий безопасный кандидат.
+    pathSwitchScoreMargin: 0.15  # Преимущество нового безопасного кандидата по score.
+    safePathSwitchMinIntervalSec: 0.5  # Пауза плановых переключений пути, с; obstacle stop не задерживается.
+    autonomyMode: true  # Автономный NAV источник local nodes; штатно true.
+    joyToSpeedDelay: 2.0  # Задержка возврата autonomySpeed после joystick/speed, с.
+    joyToCheckObstacleDelay: 5.0  # Возврат автоматической obstacle check после joystick, с.
+    goalClearRange: 0.5  # Зона очистки препятствий около цели, м.
+    goalX: 0.0  # Начальная X цели до way_point, м; движение дополнительно gated.
+    goalY: 0.0  # Начальная Y цели до way_point, м.
+  # Слежение за путём; speed/yaw/accel/goal/offsets вычисляются из общих полей.
+  pathFollower:
+    pubSkipNum: 1  # Пропуск циклов публикации follower; 1 = каждый второй цикл 100 Гц.
+    twoWayDrive: false  # Разрешить переключение движения вперёд/назад.
+    lookAheadDis: 0.5  # Дистанция lookahead follower, м.
+    yawRateGain: 1.5  # Усиление коррекции курса при движении; ошибка в рад.
+    stopYawRateGain: 1.5  # Усиление коррекции курса при остановке.
+    switchTimeThre: 1.0  # Пауза переключения вперёд/назад, с.
+    dirDiffThre: 0.4  # Порог ошибки направления обычного follower, рад.
+    omniDirDiffThre: 1.5  # Порог ошибки направления holonomic, рад.
+    noRotSpeed: 10.0  # Порог линейной скорости для подавления yaw, м/с; прежнее значение.
+    useInclRateToSlow: false  # Замедлять при большой скорости наклона.
+    inclRateThre: 120.0  # Порог скорости наклона, град/с.
+    slowRate1: 0.25  # Первый множитель скорости после наклона.
+    slowRate2: 0.5  # Второй множитель восстановления скорости.
+    slowTime1: 2.0  # Длительность первого замедления, с.
+    slowTime2: 2.0  # Длительность второго замедления, с.
+    useInclToStop: false  # Останавливать при большом угле наклона.
+    inclThre: 45.0  # Порог угла наклона, град.
+    stopTime: 5.0  # Длительность остановки после наклона, с.
+    noRotAtStop: false  # Запретить yaw при нулевой линейной скорости.
+    noRotAtGoal: true  # Запретить yaw при достижении цели.
+    autonomyMode: true  # Автономный NAV источник local nodes; штатно true.
+    joyToSpeedDelay: 2.0  # Задержка возврата autonomySpeed после joystick/speed, с.
+    odomTimeoutSec: 0.5  # Максимальный возраст odometry follower, с.
+    pathTimeoutSec: 0.5  # Максимальный возраст local path/constraint follower, с.
+    allowStaticPath: false  # Принимать неподлежащее обновлению path; real NAV требует false.
+    is_real_robot: false  # Legacy switch follower; в RL цепочке false, это не use_sim_time.
+    sendSportCommand: false  # Прямые Sport Move follower; с R3 ОБЯЗАТЕЛЬНО false.
+    narrowAlignmentConfirmCycles: 5  # Число циклов подтверждения narrow alignment.
+    narrowRealignTimeoutSec: 2.0  # Время narrow realignment до остановки, с.
+    unicycleRotateEnterDeg: 55.0  # Вход в поворот unicycle на месте, ошибка в град.
+    unicycleRotateExitDeg: 35.0  # Выход из поворота unicycle на месте, ошибка в град.
+    unicycleRotateGain: 1.5  # Усиление поворота unicycle на месте.
+  # Локальный terrain. vehicleHeight — фильтрационная полоса, не HOME габарит.
+  terrainAnalysis:
+    restart_on_time_jump: false  # Перезапуск при скачке ROS time; физический стек false.
+    worldFrame: map  # Frame terrain; текущий контракт map.
+    scanVoxelSize: 0.05  # Voxel входного registered scan, м.
+    decayTime: 2.0  # Срок хранения terrain-точек, с.
+    noDecayDis: 0.0  # Радиус без старения точек, м.
+    clearingDis: 8.0  # Радиус ручной очистки terrain, м.
+    useSorting: true  # Оценивать ground по квантилю вместо минимума высот.
+    quantileZ: 0.25  # Квантиль высот ground, 0..1.
+    considerDrop: false  # Учитывать отрицательные перепады.
+    limitGroundLift: false  # Ограничивать подъём оценки ground.
+    maxGroundLift: 0.15  # Максимальный подъём ground, м.
+    clearDyObs: false  # Очистка динамических препятствий.
+    minDyObsDis: 0.3  # Минимальная дистанция dynamic obstacle, м.
+    minDyObsAngle: 0.0  # Нижний порог угла dynamic obstacle, град.
+    minDyObsRelZ: -0.3  # Нижний порог относительной высоты dynamic obstacle, м.
+    absDyObsRelZThre: 0.2  # Порог абсолютной высоты dynamic obstacle, м.
+    minDyObsVFOV: -16.0  # Нижний вертикальный угол dynamic filter, град.
+    maxDyObsVFOV: 16.0  # Верхний вертикальный угол dynamic filter, град.
+    minDyObsPointNum: 1  # Минимальное число dynamic obstacle точек.
+    noDataObstacle: true  # Считать область без данных препятствием.
+    noDataBlockSkipNum: 0  # Пропускаемые блоки no-data области.
+    minBlockPointNum: 10  # Минимальное число точек наблюдаемого блока.
+    maxElevBelowVeh: -0.6  # Нижняя ground отметка относительно odometry origin, м.
+    noDataAreaMinX: 0.3  # Нижняя X no-data зоны, м.
+    noDataAreaMaxX: 1.8  # Верхняя X no-data зоны, м.
+    noDataAreaMinY: -0.9  # Нижняя Y no-data зоны, м.
+    noDataAreaMaxY: 0.9  # Верхняя Y no-data зоны, м.
+    vehicleHeight: 1.5  # Вертикальная полоса terrain-фильтра, м; НЕ FAR vehicle_height.
+    voxelPointUpdateThre: 100  # Новые точки для обновления voxel.
+    voxelTimeUpdateThre: 2.0  # Интервал принудительного обновления voxel, с.
+    minRelZ: -1.5  # Нижняя высота точек относительно odometry origin, м.
+    maxRelZ: 0.5  # Верхняя высота точек относительно odometry origin, м.
+    disRatioZ: 0.2  # Расширение Z окна пропорционально расстоянию.
+  # Расширенный terrain для FAR.
+  terrainAnalysisExt:
+    restart_on_time_jump: false  # Перезапуск при скачке ROS time; физический стек false.
+    worldFrame: map  # Frame terrain; текущий контракт map.
+    scanVoxelSize: 0.1  # Voxel входного registered scan, м.
+    decayTime: 10.0  # Срок хранения terrain-точек, с.
+    noDecayDis: 0.0  # Радиус без старения точек, м.
+    clearingDis: 30.0  # Радиус ручной очистки terrain, м.
+    useSorting: true  # Оценивать ground по квантилю вместо минимума высот.
+    quantileZ: 0.1  # Квантиль высот ground, 0..1.
+    vehicleHeight: 1.5  # Вертикальная полоса terrain-фильтра, м; НЕ FAR vehicle_height.
+    voxelPointUpdateThre: 100  # Новые точки для обновления voxel.
+    voxelTimeUpdateThre: 2.0  # Интервал принудительного обновления voxel, с.
+    lowerBoundZ: -2.5  # Нижняя Z extended terrain относительно odometry origin, м.
+    upperBoundZ: 1.0  # Верхняя Z extended terrain относительно odometry origin, м.
+    disRatioZ: 0.1  # Расширение Z окна пропорционально расстоянию.
+    checkTerrainConn: false  # Проверка связности extended terrain.
+    terrainUnderVehicle: -0.75  # Начальная поверхность под odometry origin, м.
+    terrainConnThre: 0.5  # Допустимый перепад ground-ячеек, м.
+    ceilingFilteringThre: 2.0  # Порог удаления потолка, м.
+    localTerrainMapRadius: 4.0  # Радиус подмешивания local terrain в extended map, м.
+  # Point-LIO: прежние эффективные utlidar.yaml + mapping_utlidar.launch значения.
+  laserMapping:
+    prop_at_freq_of_imu: true  # Propagation с частотой IMU.
+    use_imu_as_input: false  # Модель Point-LIO; false = прежнее effective real значение, IMU включён.
+    check_satu: true  # Проверять насыщение gyro/accel.
+    init_map_size: 10  # Число точек первичной карты.
+    space_down_sample: true  # Пространственное прореживание облака.
+    mapping.satu_acc: 30.0  # Насыщение ускорения, м/с² при acc_norm=9.81.
+    mapping.satu_gyro: 35.0  # Насыщение gyro, рад/с.
+    mapping.acc_norm: 9.81  # Норма gravity в единицах IMU; 9.81 для м/с².
+    mapping.plane_thr: 0.1  # Порог плоскостности соседних точек.
+    point_filter_num: 1  # Шаг point filter; Unitree handler читает все точки, влияет на другие handlers.
+    common.con_frame: false  # Объединять LiDAR кадры.
+    common.con_frame_num: 1  # Количество объединяемых кадров.
+    common.cut_frame: false  # Делить кадр на временные части.
+    common.cut_frame_time_interval: 0.1  # Длительность части кадра, с.
+    common.time_lag_imu_to_lidar: 0.0  # Дополнительный сдвиг IMU к LiDAR, с.
+    filter_size_surf: 0.1  # Эффективный voxel входного облака, м; имя читается C++.
+    filter_size_map: 0.1  # Эффективный voxel карты, м.
+    cube_side_length: 1000.0  # Сторона куба карты, м.
+    mapping.det_range: 100.0  # Дальность LiDAR match, м.
+    mapping.fov_degree: 180.0  # Поле зрения LiDAR, град.
+    mapping.imu_en: true  # Использовать IMU в Point-LIO.
+    mapping.start_in_aggressive_motion: false  # Старт без неподвижности; требует gravity_init.
+    mapping.extrinsic_est_en: false  # Онлайн оценка LiDAR↔IMU extrinsics.
+    mapping.imu_time_inte: 0.01  # Номинальный период IMU, с; 0.01 = 100 Гц, проверить фактическую частоту.
+    mapping.lidar_meas_cov: 0.01  # Ковариация LiDAR measurement.
+    mapping.acc_cov_input: 0.1  # Шум accel input-модели.
+    mapping.vel_cov: 20.0  # Ковариация скорости фильтра.
+    mapping.gyr_cov_input: 0.01  # Шум gyro input-модели.
+    mapping.gyr_cov_output: 1000.0  # Шум gyro output-модели.
+    mapping.acc_cov_output: 500.0  # Шум accel output-модели.
+    mapping.b_gyr_cov: 0.0001  # Шум дрейфа gyro bias.
+    mapping.b_acc_cov: 0.0001  # Шум дрейфа accel bias.
+    mapping.imu_meas_acc_cov: 0.1  # Шум измерения accel IMU.
+    mapping.imu_meas_omg_cov: 0.1  # Шум измерения angular velocity IMU.
+    preprocess.blind: 0.5  # Радиус удаления близких точек, м.
+    preprocess.lidar_type: 5  # 5 = Unitree L1 / unilidar handler.
+    preprocess.scan_line: 18  # Номинальное число scan lines Unitree.
+    preprocess.scan_rate: 10  # Номинальная scan частота, Гц; Unitree берёт point time из поля time.
+    preprocess.timestamp_unit: 0  # Единица поля time: 0=с, 1=мс, 2=мкс, 3=нс.
+    mapping.match_s: 81.0  # Порог геометрического match.
+    mapping.gravity_align: false  # Выравнивать world Z по заданной gravity.
+    mapping.gravity: [0.0, 0.0, 0.0]  # Заданная world gravity XYZ при gravity_align.
+    mapping.gravity_init: [0.0, 0.0, 0.0]  # Начальная gravity XYZ при aggressive/no-IMU старте.
+    mapping.extrinsic_T: [0.007698, 0.014655, -0.00667]  # Прежняя IMU↔LiDAR трансляция XYZ, м; не offset корпуса.
+    mapping.extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]  # Прежняя IMU↔LiDAR матрица поворота 3×3 по строкам.
+    odometry.publish_odometry_without_downsample: true  # Odometry без прореживания.
+    publish.path_en: false  # Публиковать SLAM path; remap в /point_lio/path, не local /path.
+    publish.scan_publish_en: true  # Registered scan для terrain/planners; требуется true.
+    publish.scan_bodyframe_pub_en: false  # Дополнительное облако в IMU-body frame.
+    runtime_pos_log_enable: false  # Внутренние position logs; false без диагностики.
+    pcd_save.pcd_save_en: false  # Запись карты PCD; false без отдельной задачи.
+    pcd_save.interval: -1  # PCD интервал в кадрах; -1 = одна накопленная карта, только если запись включена.
+    use_sim_time: false  # Физический Jetson false; без Humble/MuJoCo clock.
+    restart_on_time_jump: false  # Перезапуск при скачке ROS time; физический стек false.
+  # FAR graph; goal tolerance и sensor offsets из общих полей.
+  far_planner:
+    opencv_threads: 1  # Потоки OpenCV contour kernels в процессе FAR; ограничивает конкуренцию с RL, не частоту planner.
+    restart_on_time_jump: false  # Перезапуск при скачке ROS time; физический стек false.
+    main_run_freq: 5.0  # Частота FAR graph/replan и heartbeat, Гц.
+    voxel_dim: 0.1  # FAR voxel, м; участвует в clearance.
+    robot_dim: 0.6  # Диаметр FAR дискового envelope, м; clearance = robot_dim/2 + voxel_dim.
+    vehicle_height: 0.34  # Высота odometry origin над ground, м; не общая высота робота.
+    sensor_range: 8.0  # Радиус sensor map FAR, м.
+    terrain_range: 6.0  # Радиус terrain FAR, м.
+    local_planner_range: 2.5  # Горизонт way_point для localPlanner, м.
+    visualize_ratio: 0.4  # Масштаб визуализации FAR; на маршрут не влияет.
+    is_viewpoint_extend: true  # Расширять graph из текущего viewpoint.
+    is_multi_layer: false  # Многоуровневый graph.
+    is_opencv_visual: false  # Отладочное окно OpenCV.
+    is_static_env: false  # Заморозить dynamic obstacle обновления; штатно false.
+    is_pub_boundary: false  # Публиковать navigation_boundary.
+    is_debug_output: false  # Подробные логи FAR.
+    is_attempt_autoswitch: true  # Переключать попытку достижимого маршрута.
+    world_frame: map  # World frame FAR/decoder; текущий контракт map.
+    auto_vehicle_height: true  # Уточнять vehicle_height по свободному terrain.
+    map_handler/floor_height: 2.0  # Высота слоя постоянной карты, м.
+    map_handler/cell_length: 2.5  # Длина map ячейки, м.
+    map_handler/map_grid_max_length: 200.0  # Максимальная сторона map grid, м.
+    map_handler/map_grad_max_height: 10.0  # Максимальная высота map grid, м; имя grad сохранено.
+    util/angle_noise: 16.0  # Допуск graph matching, град.
+    util/accept_max_align_angle: 4.0  # Максимальная ошибка выравнивания graph edge, град.
+    util/new_intensity_thred: 2.0  # Intensity порог новой obstacle-точки.
+    util/terrain_free_Z: 0.15  # Высота traversable terrain, м.
+    util/dyosb_update_thred: 4  # Порог обновления dynamic obstacles; имя сохранено.
+    util/new_point_counter: 3  # Подтверждения новой map-точки.
+    util/dynamic_obs_dacay_time: 1.0  # Срок dynamic obstacle, с; исходное имя dacay сохранено.
+    util/new_points_decay_time: 1.0  # Срок новых точек, с.
+    util/obs_inflate_size: 1  # Число voxel-соседей obstacle occupancy expansion.
+    g_planner/goal_adjust_radius: 0.8  # Радиус поиска adjusted goal, м.
+    g_planner/free_counter_thred: 7  # Подтверждения свободной goal области.
+    g_planner/reach_goal_vote_size: 3  # Голоса подтверждения цели.
+    g_planner/path_momentum_thred: 3  # Порог удержания текущего FAR направления.
+    graph/connect_votes_size: 5  # Окно голосования graph edge.
+    graph/clear_dumper_thred: 3  # Порог удаления устаревшего graph кандидата.
+    graph/node_finalize_thred: 5  # Подтверждения фиксации graph node.
+    graph/filter_pool_size: 6  # История фильтра graph node.
+    graph/connect_angle_thred: 10.0  # Угловой порог graph connection, град.
+    graph/dirs_filter_margin: 10.0  # Угловой запас фильтра направлений, град.
+    graph_msger/robot_id: 1  # Идентификатор робота graph messages.
+    c_detector/resize_ratio: 3.0  # Масштаб contour detection изображения.
+    c_detector/filter_count_value: 4  # Подтверждения contour pixel.
+    c_detector/is_save_img: false  # Записывать contour debug изображения.
+    c_detector/img_folder_path: /path  # Каталог при is_save_img=true; штатно запись выключена.
+  # Обмен/визуализация graph, без управления роботом.
+  graph_decoder:
+    world_frame: map  # World frame FAR/decoder; текущий контракт map.
+    visual_scale_ratio: 0.5  # Масштаб graph_decoder markers.

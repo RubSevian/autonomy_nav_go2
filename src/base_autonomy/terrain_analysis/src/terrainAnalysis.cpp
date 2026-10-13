@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <chrono>
+#include <atomic>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/time.hpp"
@@ -13,8 +14,8 @@
 #include <sensor_msgs/msg/joy.hpp>
 #include <std_msgs/msg/float32.hpp>
 
-#include "tf2/transform_datatypes.h"
-#include "tf2_ros/transform_broadcaster.h"
+#include "tf2/transform_datatypes.hpp"
+#include "tf2_ros/transform_broadcaster.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 #include <pcl/filters/voxel_grid.h>
@@ -65,6 +66,7 @@ double voxelTimeUpdateThre = 2.0;
 double minRelZ = -1.5;
 double maxRelZ = 0.2;
 double disRatioZ = 0.2;
+string worldFrame = "map";
 
 // terrain voxel parameters
 float terrainVoxelSize = 1.0;
@@ -205,7 +207,16 @@ void clearingHandler(const std_msgs::msg::Float32::ConstSharedPtr dis) {
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
   auto nh = rclcpp::Node::make_shared("terrainAnalysis");
+  std::atomic<bool> time_reset_requested{false};
+  rclcpp::JumpHandler::SharedPtr time_jump_handler;
+  if (nh->declare_parameter<bool>("restart_on_time_jump", false)) {
+    rcl_jump_threshold_t threshold{};
+    threshold.min_backward.nanoseconds = -500000000;
+    time_jump_handler = nh->get_clock()->create_jump_callback(nullptr,
+        [&time_reset_requested](const rcl_time_jump_t&) { time_reset_requested = true; }, threshold);
+  }
 
+  nh->declare_parameter<string>("worldFrame", worldFrame);
   nh->declare_parameter<double>("scanVoxelSize", scanVoxelSize);
   nh->declare_parameter<double>("decayTime", decayTime);
   nh->declare_parameter<double>("noDecayDis", noDecayDis);
@@ -238,6 +249,7 @@ int main(int argc, char **argv) {
   nh->declare_parameter<double>("maxRelZ", maxRelZ);
   nh->declare_parameter<double>("disRatioZ", disRatioZ);
 
+  nh->get_parameter("worldFrame", worldFrame);
   nh->get_parameter("scanVoxelSize", scanVoxelSize);
   nh->get_parameter("decayTime", decayTime);
   nh->get_parameter("noDecayDis", noDecayDis);
@@ -286,10 +298,27 @@ int main(int argc, char **argv) {
 
   downSizeFilter.setLeafSize(scanVoxelSize, scanVoxelSize, scanVoxelSize);
 
+  // Reuse one executor; the free spin_some(node) creates one per call.
+  rclcpp::executors::SingleThreadedExecutor input_executor;
+  input_executor.add_node(nh);
   rclcpp::Rate rate(100);
-  bool status = rclcpp::ok();
-  while (status) {
-    rclcpp::spin_some(nh);
+  // SIGINT can invalidate the context between ok() and sleep().
+  const auto sleep_rate = [&rate] {
+    try { rate.sleep(); }
+    catch (const std::runtime_error&) { if (rclcpp::ok()) throw; }
+  };
+  while (rclcpp::ok()) {
+    try {
+      input_executor.spin_some();
+    } catch (const rclcpp::exceptions::RCLError&) {
+      if (!rclcpp::ok()) break;
+      throw;
+    }
+    if (!rclcpp::ok()) break;
+    if (time_reset_requested) {
+      RCLCPP_WARN(nh->get_logger(), "[TIME_RESET] restarting terrainAnalysis with an empty voxel history");
+      break;
+    }
     if (newlaserCloud) {
       newlaserCloud = false;
 
@@ -700,14 +729,14 @@ int main(int argc, char **argv) {
       sensor_msgs::msg::PointCloud2 terrainCloud2;
       pcl::toROSMsg(*terrainCloudElev, terrainCloud2);
       terrainCloud2.header.stamp = rclcpp::Time(static_cast<uint64_t>(laserCloudTime * 1e9));
-      terrainCloud2.header.frame_id = "map";
+      terrainCloud2.header.frame_id = worldFrame;
       pubLaserCloud->publish(terrainCloud2);
     }
 
     // status = ros::ok();
-    status = rclcpp::ok();
-    rate.sleep();
+    sleep_rate();
   }
 
+  if (rclcpp::ok()) rclcpp::shutdown();
   return 0;
 }

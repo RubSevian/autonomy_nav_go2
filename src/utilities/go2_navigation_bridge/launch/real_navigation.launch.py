@@ -2,11 +2,12 @@
 from pathlib import Path
 import math
 import yaml
+import importlib.util
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, GroupAction
-from launch.launch_description_sources import AnyLaunchDescriptionSource
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node, SetRemap
+from launch.conditions import IfCondition
+from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 
 def _stack(context):
@@ -14,9 +15,25 @@ def _stack(context):
     stage = get('stage')
     if stage not in ('command_test', 'localization', 'local', 'far'):
         raise ValueError('Unknown navigation stage: ' + stage)
+    share = Path(get_package_share_directory('go2_navigation_bridge'))
+    spec = importlib.util.spec_from_file_location('navigation_profile', share / 'scripts' / 'navigation_profile.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    profile = module.load_profile(get('profile_path'))
+    # An explicit launch offset overrides the common value before any node/TF is created.
+    for arg,key in (('sensor_offset_x','sensor_offset_x_m'), ('sensor_offset_y','sensor_offset_y_m')):
+        if get(arg):
+            value = float(get(arg))
+            if not math.isfinite(value):
+                raise ValueError('Sensor offsets must be finite')
+            profile['robot'][key] = value
+    robot, local, bridge, sensors = (profile[name] for name in ('robot','local','bridge','sensors'))
+    parameters = module.component_parameters(profile)
+    bridge_params = dict({key:(value if key == 'tf_pair_max_samples' else float(value)) for key,value in bridge.items()}, goal_tolerance_m=float(local['goal_tolerance_m']),
+                         imu_topic=sensors['raw_imu_output_topic'], lidar_topic=sensors['cloud_topic'], use_sim_time=False)
     actions = []
     if stage == 'command_test':
-        return [Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[{'input_mode': 'command_test'}], output='screen')]
+        return [Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[dict(bridge_params, input_mode='command_test')], output='screen')]
     calibration = Path(get('calibration_path')).expanduser()
     if not calibration.is_file():
         raise ValueError('Real IMU calibration file required: ' + str(calibration))
@@ -24,33 +41,41 @@ def _stack(context):
     keys = ('acc_bias_x','acc_bias_y','acc_bias_z','ang_bias_x','ang_bias_y','ang_bias_z','ang_z2x_proj','ang_z2y_proj')
     if not isinstance(values, dict) or any(key not in values or type(values[key]) not in (int,float) or not math.isfinite(values[key]) for key in keys):
         raise ValueError('Calibration must contain eight finite bias/projection values')
-    def include(package, filename, args=None):
-        path = str(Path(get_package_share_directory(package)) / 'launch' / filename)
-        return IncludeLaunchDescription(AnyLaunchDescriptionSource(path), launch_arguments=(args or {}).items())
-    actions.append(include('point_lio_unilidar', 'mapping_utlidar.launch', {'rviz': 'false', 'calibration_path': str(calibration)}))
+    # Direct nodes intentionally avoid hidden overrides in legacy XML/YAML files.
+    actions.append(Node(package='transform_sensors', executable='transform_everything', name='transform_everything',
+                        parameters=[dict(sensors, calibration_path=str(calibration), use_sim_time=False)], output='screen'))
+    actions.append(Node(package='point_lio_unilidar', executable='pointlio_mapping', name='laserMapping',
+                        parameters=[parameters['laserMapping']], output='screen',
+                        remappings=[('/path','/point_lio/path'),('/cloud_registered','/registered_scan'),('/aft_mapped_to_init','/state_estimation')]))
     # Preserve Jazzy frame relationships; no simulated sensor/GT nodes.
-    offsets = [float(get(name)) for name in ('sensor_offset_x', 'sensor_offset_y')]
-    if not all(math.isfinite(value) for value in offsets):
-        raise ValueError('Sensor offsets must be finite')
+    offsets = [float(robot[key]) for key in ('sensor_offset_x_m','sensor_offset_y_m')]
     actions += [Node(package='tf2_ros', executable='static_transform_publisher', name='nav_map_camera_init', arguments=['--frame-id','map','--child-frame-id','camera_init']),
                 Node(package='tf2_ros', executable='static_transform_publisher', name='nav_aft_sensor', arguments=['--frame-id','aft_mapped','--child-frame-id','sensor']),
                 Node(package='tf2_ros', executable='static_transform_publisher', name='nav_sensor_vehicle', arguments=['--frame-id','sensor','--child-frame-id','vehicle','--x',str(-offsets[0]),'--y',str(-offsets[1])])]
-    actions.append(Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[{'input_mode': 'stack', 'local_route': stage == 'local', 'far_route': stage == 'far'}], output='screen'))
+    actions.append(Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[dict(bridge_params, input_mode='stack', local_route=stage == 'local', far_route=stage == 'far')], output='screen'))
+    actions.append(Node(package='rviz2', executable='rviz2', name='real_nav_rviz',
+                        arguments=['-d',str(share/'config/real_navigation.rviz')],
+                        remappings=[('/goal_point', '/way_point' if stage == 'local' else '/goal_point')],
+                        condition=IfCondition(LaunchConfiguration('rviz')), output='screen'))
     if stage in ('local','far'):
-        # Remap planner output only; bridge is the sole publisher on physical /cmd_vel.
-        planners = [SetRemap(src='/cmd_vel', dst='/navigation/cmd_vel'),
-                    include('local_planner','local_planner.launch', {'autonomyMode':'true','maxSpeed':'0.2','autonomySpeed':'0.2','is_real_robot':'false','sendSportCommand':'false','publishBaseTf':'false','sensorOffsetX':get('sensor_offset_x'),'sensorOffsetY':get('sensor_offset_y')}),
-                    include('terrain_analysis','terrain_analysis.launch'),
-                    include('terrain_analysis_ext','terrain_analysis_ext.launch')]
+        # Remap planner output only; bridge publishes /cmd_vel diagnostics and the atomic R3 envelope.
+        parameters['localPlanner']['pathFolder'] = str(Path(get_package_share_directory('local_planner'))/'paths')
+        for package, executable in (('local_planner','localPlanner'), ('local_planner','pathFollower'),
+                                    ('terrain_analysis','terrainAnalysis'), ('terrain_analysis_ext','terrainAnalysisExt')):
+            actions.append(Node(package=package, executable=executable, name=executable, parameters=[parameters[executable]],
+                                remappings=[('/cmd_vel','/navigation/cmd_vel')] if executable == 'pathFollower' else [], output='screen'))
         if stage == 'far':
-            planners.append(include('far_planner','far_planner.launch.py',{'rviz':'false'}))
-        actions.append(GroupAction(actions=planners))
+            actions.append(Node(package='far_planner', executable='far_planner', name='far_planner', parameters=[parameters['far_planner']],
+                                remappings=[('/odom_world','/state_estimation'),('/terrain_cloud','/terrain_map_ext'),('/scan_cloud','/terrain_map'),('/terrain_local_cloud','/registered_scan')], output='screen'))
+            actions.append(Node(package='graph_decoder', executable='graph_decoder', name='graph_decoder', parameters=[parameters['graph_decoder']], output='screen'))
     return actions
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('stage',default_value='localization'),
+        DeclareLaunchArgument('rviz',default_value='false'),
         DeclareLaunchArgument('calibration_path',default_value=str(Path.home()/'Desktop/imu_calib_data.yaml')),
-        DeclareLaunchArgument('sensor_offset_x',default_value='0.3'),
-        DeclareLaunchArgument('sensor_offset_y',default_value='0.0'),
+        DeclareLaunchArgument('profile_path', default_value=str(Path(get_package_share_directory('go2_navigation_bridge'))/'config/real_navigation.yaml')),
+        DeclareLaunchArgument('sensor_offset_x',default_value=''),
+        DeclareLaunchArgument('sensor_offset_y',default_value=''),
         OpaqueFunction(function=_stack)])

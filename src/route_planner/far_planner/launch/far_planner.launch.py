@@ -7,13 +7,15 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node, SetParameter
 from ament_index_python.packages import get_package_share_directory
 from launch.substitutions import PythonExpression
-import launch_ros
+from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     return LaunchDescription([
         SetParameter(name='use_sim_time', value='false'),
         DeclareLaunchArgument('config', default_value='default'),
         DeclareLaunchArgument('rviz', default_value='false'),
+        DeclareLaunchArgument('sensor_offset_x', default_value='0.0'),
+        DeclareLaunchArgument('sensor_offset_y', default_value='0.0'),
 
         Node(
             package='far_planner',
@@ -22,6 +24,8 @@ def generate_launch_description():
             ros_arguments=['--log-level', 'rmw_cyclonedds_cpp:=error'],
             output='screen',
             parameters=[
+                {'sensor_offset_x': ParameterValue(LaunchConfiguration('sensor_offset_x'), value_type=float),
+                 'sensor_offset_y': ParameterValue(LaunchConfiguration('sensor_offset_y'), value_type=float)},
                 PythonExpression([
                 '"', 
                 get_package_share_directory('far_planner'), 

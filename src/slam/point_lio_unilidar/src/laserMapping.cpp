@@ -8,6 +8,7 @@
 #include <Python.h>
 #include <so3_math.h>
 #include <Eigen/Core>
+#include <atomic>
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
@@ -16,11 +17,11 @@
 #include <pcl/io/pcd_io.h>
 
 #include <rclcpp/rclcpp.hpp>
-#include <tf2/transform_datatypes.h>
+#include <tf2/transform_datatypes.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-#include <tf2_ros/transform_broadcaster.h>
-#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/transform_broadcaster.hpp>
+#include <tf2_ros/transform_listener.hpp>
 
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -269,7 +270,9 @@ void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
 
     if (get_time_in_sec(msg->header.stamp) < last_timestamp_lidar)
     {
-        printf("lidar loop back, clear buffer");
+        static rclcpp::Clock warning_clock(RCL_STEADY_TIME);
+        RCLCPP_WARN_THROTTLE(rclcpp::get_logger("pointlio_mapping"), warning_clock, 5000,
+                            "Discarding out-of-order LiDAR stamp (not clearing estimator)");
 
         mtx_buffer.unlock();
         sig_buffer.notify_all();
@@ -484,7 +487,9 @@ void imu_cbk(const sensor_msgs::msg::Imu::ConstSharedPtr msg_in)
 
     if (timestamp < last_timestamp_imu)
     {
-        printf("imu loop back, clear deque");
+        static rclcpp::Clock warning_clock(RCL_STEADY_TIME);
+        RCLCPP_WARN_THROTTLE(rclcpp::get_logger("pointlio_mapping"), warning_clock, 5000,
+                            "Discarding out-of-order IMU stamp (not clearing estimator)");
 
         mtx_buffer.unlock();
         sig_buffer.notify_all();
@@ -853,10 +858,19 @@ void publish_path(rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath)
     }
 }
 
-int main(int argc, char **argv)
+int RunMapping()
 {
-    rclcpp::init(argc, argv);
     auto node = rclcpp::Node::make_shared("laserMapping");
+    // A clock epoch reset invalidates the EKF, map and all sensor queues, not
+    // just last_timestamp_*. Exit cleanly; simulation launch respawns this node.
+    std::atomic<bool> time_reset_requested{false};
+    rclcpp::JumpHandler::SharedPtr time_jump_handler;
+    if (node->declare_parameter<bool>("restart_on_time_jump", false)) {
+        rcl_jump_threshold_t threshold{};
+        threshold.min_backward.nanoseconds = -500000000;
+        time_jump_handler = node->get_clock()->create_jump_callback(nullptr,
+            [&time_reset_requested](const rcl_time_jump_t&) { time_reset_requested = true; }, threshold);
+    }
 
     readParameters(node);
     cout << "lidar_type: " << lidar_type << endl << flush;
@@ -959,18 +973,31 @@ int main(int argc, char **argv)
 
     signal(SIGINT, SigHandle);
 
+    // Reuse one executor; the free spin_some(node) creates one per call.
+    rclcpp::executors::SingleThreadedExecutor input_executor;
+    input_executor.add_node(node);
     rclcpp::Rate rate(5000);
+    // SIGINT can invalidate the context between ok() and sleep().
+    const auto sleep_rate = [&rate] {
+      try { rate.sleep(); }
+      catch (const std::runtime_error&) { if (rclcpp::ok()) throw; }
+    };
     while (rclcpp::ok())
     {
 
         if (flg_exit)
             break;
 
-        rclcpp::spin_some(node);
+        input_executor.spin_some();
+
+        if (time_reset_requested) {
+            RCLCPP_WARN(node->get_logger(), "[TIME_RESET] restarting Point-LIO with a fresh EKF, map and sensor queues");
+            break;
+        }
 
         if (sync_packages(Measures) == false)
         {
-            rate.sleep();
+            sleep_rate();
             continue;
         }
 
@@ -1477,7 +1504,7 @@ int main(int argc, char **argv)
             dump_lio_state_to_log(fp);
         }
 
-        rate.sleep();
+        sleep_rate();
     }
 
     /* 1. make sure you have enough memories
@@ -1494,5 +1521,18 @@ int main(int argc, char **argv)
     fout_out.close();
     fout_imu_pbp.close();
 
+    if (fp) fclose(fp);
+    // Global TF broadcaster must release its DDS writer before the node/context.
+    // All remaining local publishers/subscriptions leave scope before shutdown.
+    tf_br.reset();
+
     return 0;
+}
+
+int main(int argc, char **argv)
+{
+    rclcpp::init(argc, argv);
+    const int result = RunMapping();
+    if (rclcpp::ok()) rclcpp::shutdown();
+    return result;
 }

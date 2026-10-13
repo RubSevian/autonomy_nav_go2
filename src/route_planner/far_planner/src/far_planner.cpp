@@ -8,6 +8,8 @@
 
 #include "far_planner/far_planner.h"
 #include <cmath>
+#include <cstdint>
+#include <sstream>
 
 /***************************************************************************************/
 FARMaster::FARMaster()
@@ -22,9 +24,158 @@ FARMaster::FARMaster()
   RCLCPP_INFO(nh_->get_logger(), "FAR Planner Node Initiated");
 }
 
+void FARMaster::PublishPlannerStatus(const std::string& state, const std::string& code,
+                                     const std::string& text, bool force) {
+  if (!planner_status_pub_) return;
+  const std::string signature = state + "|" + code + "|" + text;
+  const double stamp = nh_->now().seconds();
+  // Retain state transitions immediately, but refresh changing counters at 1 Hz.
+  if (!force && signature == last_status_signature_ && stamp >= last_status_stamp_ &&
+      stamp - last_status_stamp_ < 1.0) return;
+  last_status_signature_ = signature;
+  last_status_stamp_ = stamp;
+  last_status_state_ = state;
+  last_status_code_ = code;
+  last_status_text_ = text;
+
+  const NavNodePtr goal_ptr = graph_planner_.GetGoalNodePtr();
+  const NavNodePtr graph_odom_ptr = graph_planner_.GetOdomNodePtr();
+  if (goal_ptr != NULL) {
+    goal_current_ = goal_ptr->position;
+    graph_goal_origin_ = graph_planner_.GetOriginNodePos(false);
+    has_goal_current_ = true;
+    has_graph_goal_origin_ = true;
+    goal_has_parent_ = goal_ptr->parent != NULL;
+    goal_has_free_parent_ = goal_ptr->free_parent != NULL;
+    goal_is_free_traversable_ = goal_ptr->is_free_traversable;
+    goal_is_in_freespace_ = graph_planner_.IsGoalInFreespace();
+  }
+
+  diagnostic_msgs::msg::DiagnosticArray array;
+  array.header.stamp = nh_->now();
+  diagnostic_msgs::msg::DiagnosticStatus status;
+  status.name = "far_planner";
+  status.hardware_id = "go2_real";
+  status.level = (code == "WAYPOINT_PUBLISHED" || code == "GOAL_REACHED" ||
+                  code == "GOAL_ACCEPTED") ? diagnostic_msgs::msg::DiagnosticStatus::OK
+                                             : diagnostic_msgs::msg::DiagnosticStatus::WARN;
+  status.message = text;
+  auto add = [&status](const std::string& key, const std::string& value) {
+    diagnostic_msgs::msg::KeyValue kv;
+    kv.key = key;
+    kv.value = value;
+    status.values.push_back(kv);
+  };
+  auto point_value = [](const Point3D& point, bool available, const char* axis) {
+    if (!available) return std::string("N/A");
+    if (axis[0] == 'x') return std::to_string(point.x);
+    if (axis[0] == 'y') return std::to_string(point.y);
+    return std::to_string(point.z);
+  };
+
+  add("state", state);
+  add("reason_code", code);
+  add("reason_text", text);
+  add("navigation_active", navigation_active_ ? "true" : "false");
+  add("goal_received", goal_received_ ? "true" : "false");
+  add("goal_frame", goal_frame_);
+  add("is_odom_init", is_odom_init_ ? "true" : "false");
+  add("is_cloud_init", is_cloud_init_ ? "true" : "false");
+  add("is_graph_init", is_graph_init_ ? "true" : "false");
+  add("far_lifecycle_state", lifecycle_state_);
+  add("far_lifecycle_transition", lifecycle_transition_);
+  add("pending_goal_present", has_pending_goal_ ? "true" : "false");
+  add("queued_goal_revision", std::to_string(queued_goal_lifecycle_.queued_revision()));
+  add("consumed_goal_revision", std::to_string(queued_goal_lifecycle_.consumed_revision()));
+  add("robot_x", is_odom_init_ ? std::to_string(robot_pos_.x) : "N/A");
+  add("robot_y", is_odom_init_ ? std::to_string(robot_pos_.y) : "N/A");
+  add("robot_z", is_odom_init_ ? std::to_string(robot_pos_.z) : "N/A");
+  add("vehicle_height_nominal", std::to_string(master_params_.vehicle_height));
+  add("vehicle_height_effective", std::to_string(FARUtil::vehicle_height));
+  add("vehicle_height_source", !auto_vehicle_height_ ? "CONFIGURED" :
+      vehicle_height_updated_ ? "LOCAL_FREE_TERRAIN" :
+      vehicle_height_estimator_->initialized() ? "HELD_NO_VALID_LOCAL_GROUND" : "NOMINAL_FALLBACK");
+  add("vehicle_height_sample_count", std::to_string(vehicle_height_estimator_->sample_count()));
+  add("local_ground_z", vehicle_height_estimator_->initialized() && is_odom_init_ ?
+      std::to_string(robot_pos_.z - FARUtil::vehicle_height) : "N/A");
+  add("graph_odom_x", graph_odom_ptr ? std::to_string(graph_odom_ptr->position.x) : "N/A");
+  add("graph_odom_y", graph_odom_ptr ? std::to_string(graph_odom_ptr->position.y) : "N/A");
+  add("graph_odom_z", graph_odom_ptr ? std::to_string(graph_odom_ptr->position.z) : "N/A");
+  add("goal_terrain_associated", goal_ptr ? (graph_planner_.IsTerrainAssociated() ? "true" : "false") : "N/A");
+  add("goal_original_x", point_value(goal_original_, has_goal_original_, "x"));
+  add("goal_original_y", point_value(goal_original_, has_goal_original_, "y"));
+  add("goal_original_z", point_value(goal_original_, has_goal_original_, "z"));
+  add("graph_goal_origin_x", point_value(graph_goal_origin_, has_graph_goal_origin_, "x"));
+  add("graph_goal_origin_y", point_value(graph_goal_origin_, has_graph_goal_origin_, "y"));
+  add("graph_goal_origin_z", point_value(graph_goal_origin_, has_graph_goal_origin_, "z"));
+  add("goal_current_x", point_value(goal_current_, has_goal_current_, "x"));
+  add("goal_current_y", point_value(goal_current_, has_goal_current_, "y"));
+  add("goal_current_z", point_value(goal_current_, has_goal_current_, "z"));
+  add("goal_adjustment_distance", (has_goal_original_ && has_goal_current_)
+          ? std::to_string((goal_current_ - goal_original_).norm()) : "N/A");
+  add("distance_to_goal", (is_odom_init_ && has_goal_current_)
+          ? std::to_string((robot_pos_ - goal_current_).norm()) : "N/A");
+  add("terrain_cloud_points", temp_cloud_ptr_ ? std::to_string(temp_cloud_ptr_->size()) : "N/A");
+  add("terrain_local_points", local_terrain_ptr_ ? std::to_string(local_terrain_ptr_->size()) : "N/A");
+  add("surround_free_count", FARUtil::surround_free_cloud_ ? std::to_string(FARUtil::surround_free_cloud_->size()) : "N/A");
+  add("surround_obs_count", FARUtil::surround_obs_cloud_ ? std::to_string(FARUtil::surround_obs_cloud_->size()) : "N/A");
+  add("goal_local_free_count", goal_received_ ? std::to_string(goal_local_free_count_) : "N/A");
+  add("goal_local_obs_count", goal_received_ ? std::to_string(goal_local_obs_count_) : "N/A");
+  add("nav_graph_size", std::to_string(nav_graph_.size()));
+  std::size_t graph_edge_count = 0;
+  for (const auto& node : nav_graph_) if (node) graph_edge_count += node->connect_nodes.size();
+  add("nav_graph_edge_count", std::to_string(graph_edge_count / 2));
+  add("start_vertex_valid", odom_node_ptr_ ? "true" : "false");
+  add("start_vertex_id", odom_node_ptr_ ? std::to_string(odom_node_ptr_->id) : "N/A");
+  add("goal_vertex_valid", goal_ptr ? "true" : "false");
+  add("goal_vertex_id", goal_ptr ? std::to_string(goal_ptr->id) : "N/A");
+  add("goal_has_parent", has_goal_current_ ? (goal_has_parent_ ? "true" : "false") : "N/A");
+  add("goal_has_free_parent", has_goal_current_ ? (goal_has_free_parent_ ? "true" : "false") : "N/A");
+  add("goal_is_free_traversable", has_goal_current_ ? (goal_is_free_traversable_ ? "true" : "false") : "N/A");
+  add("goal_is_in_freespace", has_goal_current_ ? (goal_is_in_freespace_ ? "true" : "false") : "N/A");
+  add("path_size", goal_received_ ? std::to_string(path_size_) : "N/A");
+  add("planning_failed", planning_failed_ ? "true" : "false");
+  add("goal_reached", goal_reached_ ? "true" : "false");
+  add("distance_to_requested_goal_xy", (has_goal_original_ && is_odom_init_) ?
+      std::to_string(std::hypot(robot_pos_.x - goal_original_.x, robot_pos_.y - goal_original_.y)) : "N/A");
+  add("goal_tolerance_xy", std::to_string(gp_params_.converge_dist));
+  add("goal_revision", std::to_string(goal_revision_));
+  add("graph_revision", std::to_string(graph_revision_));
+  add("plan_revision", std::to_string(plan_revision_));
+  add("committed_route_revision", std::to_string(committed_route_revision_));
+  add("waypoint_revision", std::to_string(waypoint_revision_));
+  add("committed_route_hash", has_committed_route_ ? std::to_string(committed_route_hash_) : "N/A");
+  add("committed_route_nodes", committed_route_nodes_);
+  add("committed_waypoint_x", has_committed_waypoint_ ? std::to_string(committed_waypoint_.x) : "N/A");
+  add("committed_waypoint_y", has_committed_waypoint_ ? std::to_string(committed_waypoint_.y) : "N/A");
+  add("path_validation", FARPathValidation::ToString(graph_planner_.GetLastPathStatus()));
+  add("far_terrain_free_z", std::to_string(FARUtil::kFreeZ));
+  add("far_temp_free_count", temp_free_ptr_ ? std::to_string(temp_free_ptr_->size()) : "N/A");
+  add("far_temp_obs_count", temp_obs_ptr_ ? std::to_string(temp_obs_ptr_->size()) : "N/A");
+  add("local_terrain_free_count", FARUtil::local_terrain_free_ ? std::to_string(FARUtil::local_terrain_free_->size()) : "N/A");
+  add("local_terrain_obs_count", FARUtil::local_terrain_obs_ ? std::to_string(FARUtil::local_terrain_obs_->size()) : "N/A");
+  array.status.push_back(status);
+  planner_status_pub_->publish(array);
+}
+
+void FARMaster::LogLifecycleTransition(const std::string& transition, const std::string& state) {
+  lifecycle_transition_ = transition;
+  lifecycle_state_ = state;
+  std::size_t edge_count = 0;
+  for (const auto& node : nav_graph_) if (node) edge_count += node->connect_nodes.size();
+  const std::string start_id = odom_node_ptr_ ? std::to_string(odom_node_ptr_->id) : "N/A";
+  RCLCPP_DEBUG(nh_->get_logger(), "[FAR][LIFECYCLE] transition=%s state=%s vgraph_ready=%s graph_nodes=%zu graph_edges=%zu pending=%s queued_rev=%llu consumed_rev=%llu goal=(%.3f,%.3f,%.3f) start_valid=%s start_id=%s planning_requested=%s",
+      transition.c_str(), state.c_str(), is_graph_init_ ? "true" : "false", nav_graph_.size(), edge_count / 2, has_pending_goal_ ? "true" : "false",
+      static_cast<unsigned long long>(queued_goal_lifecycle_.queued_revision()), static_cast<unsigned long long>(queued_goal_lifecycle_.consumed_revision()),
+      has_pending_goal_ ? pending_goal_.point.x : 0.0, has_pending_goal_ ? pending_goal_.point.y : 0.0, has_pending_goal_ ? pending_goal_.point.z : 0.0,
+      odom_node_ptr_ ? "true" : "false", start_id.c_str(), goal_received_ ? "true" : "false");
+}
+
 void FARMaster::Init() {
   /* initialize subscriber and publisher */
   reset_graph_sub_    = nh_->create_subscription<std_msgs::msg::Empty>("/reset_visibility_graph", 5, std::bind(&FARMaster::ResetGraphCallBack, this, std::placeholders::_1));
+  navigation_cancel_sub_ = nh_->create_subscription<std_msgs::msg::Empty>(
+      "/navigation_cancel", 5, std::bind(&FARMaster::NavigationCancelCallBack, this, std::placeholders::_1));
   odom_sub_           = nh_->create_subscription<nav_msgs::msg::Odometry>("/odom_world", 5, std::bind(&FARMaster::OdomCallBack, this, std::placeholders::_1));
   terrain_sub_        = nh_->create_subscription<sensor_msgs::msg::PointCloud2>("/terrain_cloud", 1, std::bind(&FARMaster::TerrainCallBack, this, std::placeholders::_1));
   scan_sub_           = nh_->create_subscription<sensor_msgs::msg::PointCloud2>("/scan_cloud", 5, std::bind(&FARMaster::ScanCallBack, this, std::placeholders::_1));
@@ -33,6 +184,7 @@ void FARMaster::Init() {
   joy_command_sub_    = nh_->create_subscription<sensor_msgs::msg::Joy>("/joy", 5, std::bind(&FARMaster::JoyCommandCallBack, this, std::placeholders::_1));
   update_command_sub_ = nh_->create_subscription<std_msgs::msg::Bool>("/update_visibility_graph", 5, std::bind(&FARMaster::UpdateCommandCallBack, this, std::placeholders::_1));
   goal_pub_           = nh_->create_publisher<geometry_msgs::msg::PointStamped>("/way_point",5);
+  planner_status_pub_ = nh_->create_publisher<diagnostic_msgs::msg::DiagnosticArray>("/far/planner_status", rclcpp::QoS(1).transient_local());
   boundary_pub_       = nh_->create_publisher<geometry_msgs::msg::PolygonStamped>("/navigation_boundary",5);
 
   // Timers
@@ -49,17 +201,10 @@ void FARMaster::Init() {
   PublishNavigationActive(false);
   cancel_goal_service_ = nh_->create_service<std_srvs::srv::Trigger>(
       "/far_planner/cancel_goal", [this](std_srvs::srv::Trigger::Request::SharedPtr,
-          std_srvs::srv::Trigger::Response::SharedPtr response) {
-        // Default mutually-exclusive callback group also owns both planner timers.
-        // Clear only the mission; preserve the environment/visibility graph.
-        has_pending_goal_ = false;
-        graph_planner_.CancelGoal();
-        is_planner_running_ = false;
-        nav_node_ptr_ = nullptr;
-        nav_heading_ = Point3D(0,0,0);
-        PublishNavigationActive(false);
+                                      std_srvs::srv::Trigger::Response::SharedPtr response) {
+        NavigationCancelCallBack(std::make_shared<std_msgs::msg::Empty>());
         response->success = true;
-        response->message = "active and queued goals cancelled; new goal required";
+        response->message = "active and queued goals cancelled; graph preserved";
       });
 
   // Terminal formatting subscriber
@@ -148,10 +293,30 @@ void FARMaster::Init() {
 
   // init complete
   is_init_completed_ = true;
+  PublishPlannerStatus("STARTUP", "STARTUP", "FAR initialized; waiting for odometry and obstacle map");
+  if (nh_->declare_parameter<bool>("restart_on_time_jump", false)) {
+    rcl_jump_threshold_t threshold{};
+    threshold.min_backward.nanoseconds = -500000000;  // Ignore packet jitter; reset on epoch rewind.
+    time_jump_handler_ = nh_->get_clock()->create_jump_callback(nullptr,
+        [this](const rcl_time_jump_t&) { time_reset_requested_ = true; }, threshold);
+  }
   RCLCPP_INFO(nh_->get_logger(), "FAR Planner Initiated Complete");
 }
 
 void FARMaster::ResetEnvironmentAndGraph() {
+  PublishNavigationActive(false);
+  has_pending_goal_ = false;
+  defer_pending_goal_until_next_main_loop_ = false;
+  queued_goal_lifecycle_.Clear();
+  defer_pending_goal_until_next_main_loop_ = false;
+  goal_received_ = false;
+  has_last_requested_goal_ = false;
+  has_goal_original_ = false;
+  has_goal_current_ = false;
+  has_graph_goal_origin_ = false;
+  path_size_ = 0;
+  planning_failed_ = false;
+  goal_reached_ = false;
   this->ResetInternalValues();
   RCLCPP_INFO(nh_->get_logger(), "FAR Planner graph reset");
   graph_manager_.ResetCurrentGraph();
@@ -171,12 +336,24 @@ void FARMaster::ResetEnvironmentAndGraph() {
   goal_pub_->publish(goal_waypoint_stamped_);
   NodePtrStack empty_path;
   planner_viz_.VizPath(empty_path);
+  PublishPlannerStatus("GRAPH_RESET", "GRAPH_RESET", "FAR graph and terrain state reset");
 }
 
 void FARMaster::MainLoopCallBack() {
+  if (time_reset_requested_) {
+    PublishNavigationActive(false);
+    PublishPlannerStatus("TIME_RESET", "TIME_RESET", "clock rewound; cancelling goal and restarting FAR", true);
+    RCLCPP_WARN(nh_->get_logger(), "[TIME_RESET] restarting FAR with an empty map and no goal");
+    rclcpp::shutdown();
+    return;
+  }
   if (!is_init_completed_) {
     return;
   }
+  // A ready, idle planner may emit no state transition for minutes. Its retained
+  // counters must still describe the current map, not the first ready snapshot.
+  if (!last_status_state_.empty())
+    PublishPlannerStatus(last_status_state_, last_status_code_, last_status_text_);
   if (is_reset_env_) {
       this->ResetEnvironmentAndGraph();
       is_reset_env_ = false;
@@ -185,6 +362,8 @@ void FARMaster::MainLoopCallBack() {
   }
 
   if (!this->PreconditionCheck()) {
+      if (!is_odom_init_) PublishPlannerStatus("WAITING_FOR_ODOM", "WAITING_FOR_ODOM", "waiting for /odom_world");
+      else if (!is_cloud_init_) PublishPlannerStatus("WAITING_FOR_OBSTACLE_MAP_INIT", "WAITING_FOR_OBSTACLE_MAP_INIT", "waiting for non-empty FAR obstacle map");
       return;
   }
 
@@ -193,6 +372,7 @@ void FARMaster::MainLoopCallBack() {
   odom_node_ptr_ = graph_manager_.GetOdomNode();
   if (odom_node_ptr_ == NULL) {
     RCLCPP_WARN(nh_->get_logger(),"FAR: Waiting for Odometry...");
+    PublishPlannerStatus("WAITING_FOR_ODOM", "ODOM_NODE_MISSING", "odom message received but FAR odom node is unavailable");
     return;
   }
   /* Extract Vertices and new nodes */
@@ -226,6 +406,7 @@ void FARMaster::MainLoopCallBack() {
 
   /* Update v-graph in other modules */
   nav_graph_ = graph_manager_.GetNavGraph();
+  ++graph_revision_;
   contour_graph_.ExtractGlobalContours();      // Global Polygon Update
   graph_planner_.UpdaetVGraph(nav_graph_);     // Graph Planner Update
   graph_msger_.UpdateGlobalGraph(nav_graph_);  // Graph Messager Update
@@ -251,93 +432,209 @@ void FARMaster::MainLoopCallBack() {
   if (!is_graph_init_ && !nav_graph_.empty()) {
     is_graph_init_ = true;
     RCLCPP_INFO(nh_->get_logger(), "FAR Planner V-Graph initialized");
-    if (has_pending_goal_) {
-      SetGoal(pending_goal_);
-      has_pending_goal_ = false;
-      RCLCPP_INFO(nh_->get_logger(), "FAR Planner accepted the goal queued before graph initialization");
-    }
+    LogLifecycleTransition("VGRAPH_READY", "READY");
+    PublishPlannerStatus("VGRAPH_READY", "PLANNING", "FAR V-Graph initialized");
+    defer_pending_goal_until_next_main_loop_ = has_pending_goal_;
   }
+  this->TryConsumePendingGoal();
+}
 
+void FARMaster::TryConsumePendingGoal() {
+  if (!has_pending_goal_) return;
+  if (defer_pending_goal_until_next_main_loop_) {
+    defer_pending_goal_until_next_main_loop_ = false;
+    PublishPlannerStatus("GOAL_PENDING", "GOAL_WAITING_FOR_POST_GRAPH_CYCLE",
+                         "queued goal retained for one complete post-V-Graph update");
+    return;
+  }
+  if (!is_graph_init_ || nav_graph_.empty() || odom_node_ptr_ == NULL) {
+    PublishPlannerStatus("GOAL_PENDING", "GOAL_WAITING_FOR_START",
+                         "queued goal retained until graph and start vertex are valid");
+    return;
+  }
+  LogLifecycleTransition("QUEUED_GOAL_CONSUME_BEGIN", "GOAL_PENDING");
+  if (!queued_goal_lifecycle_.ConsumeIfReady(true, true, true)) {
+    RCLCPP_ERROR(nh_->get_logger(), "[FAR][LIFECYCLE] pending-goal ownership mismatch");
+    return;
+  }
+  const auto queued_goal = pending_goal_;
+  has_pending_goal_ = false;
+  LogLifecycleTransition("START_VERTEX_RESOLVED", "PLANNING");
+  SetGoal(queued_goal);
+  RCLCPP_INFO(nh_->get_logger(), "FAR Planner accepted the goal queued before graph/start initialization");
 }
 
 void FARMaster::PlanningCallBack() {
-  // A live callback heartbeat, including inactive state. A stalled planner
-  // cannot keep its cached Bool alive merely through DDS discovery.
+  // A callback heartbeat must also exist before the first graph/goal. No extra
+  // timer may keep a stalled planning callback looking healthy.
   PublishNavigationActive(navigation_active_);
+  if (time_reset_requested_) return;
   if (!is_init_completed_ || !is_graph_init_) return;
   const NavNodePtr goal_ptr = graph_planner_.GetGoalNodePtr();
-  if (goal_ptr == NULL) {
-    /* Graph Traversablity Update */
-    graph_planner_.UpdateGraphTraverability(odom_node_ptr_, NULL);
-  } else { 
-    // Update goal postion with nearby terrain cloud
-    const Point3D ori_p = graph_planner_.GetOriginNodePos(true);
-    PointCloudPtr goal_obs(new pcl::PointCloud<PCLPoint>());
-    PointCloudPtr goal_free(new pcl::PointCloud<PCLPoint>());
-    map_handler_.GetCloudOfPoint(ori_p, goal_obs, CloudType::OBS_CLOUD, true);
-    map_handler_.GetCloudOfPoint(ori_p, goal_free, CloudType::FREE_CLOUD, true);
-    graph_planner_.UpdateFreeTerrainGrid(ori_p, goal_obs, goal_free);
-    graph_planner_.ReEvaluateGoalPosition(goal_ptr, !master_params_.is_multi_layer);
-
-    // Adding goal into v-graph
-    FARUtil::Timer.start_time("Adding Goal to V-Graph");
-    graph_planner_.UpdateGoalNavNodeConnects(goal_ptr); 
-    graph_planner_.UpdaetVGraph(graph_manager_.GetNavGraph());
-    FARUtil::Timer.end_time("Adding Goal to V-Graph", false);
-
-    // Update v-graph traversibility 
-    FARUtil::Timer.start_time("Path Search");
-    graph_planner_.UpdateGraphTraverability(odom_node_ptr_, goal_ptr);
-
-    // Construct path to gaol and publish waypoint
-    NodePtrStack global_path;
-    Point3D current_free_goal;
-    NavNodePtr last_nav_ptr = nav_node_ptr_;
-    bool is_planning_fails = false;
-    goal_waypoint_stamped_.header.stamp = nh_->now();
-    bool is_current_free_nav = false;
-    bool is_reach_goal = false;
-    if (graph_planner_.PathToGoal(goal_ptr, global_path, nav_node_ptr_, current_free_goal, is_planning_fails, is_reach_goal, is_current_free_nav) && nav_node_ptr_ != NULL) {
-      Point3D waypoint = nav_node_ptr_->position;
-      if (nav_node_ptr_ != goal_ptr) {
-        waypoint = this->ProjectNavWaypoint(nav_node_ptr_, last_nav_ptr);
-      } else if (master_params_.is_viewpoint_extend) {
-        planner_viz_.VizViewpointExtend(goal_ptr, goal_ptr->position);
-      }
-      goal_waypoint_stamped_.point = FARUtil::Point3DToGeoMsgPoint(waypoint);
-      goal_pub_->publish(goal_waypoint_stamped_);
-      is_planner_running_ = true;
-      planner_viz_.VizPoint3D(waypoint, "waypoint", VizColor::MAGNA, 1.5);
-      planner_viz_.VizPoint3D(current_free_goal, "free_goal", VizColor::GREEN, 1.5);
-      planner_viz_.VizPath(global_path, is_current_free_nav);
-    } else if (is_planner_running_) { // stop robot
-      global_path.clear();
-      planner_viz_.VizPath(global_path);
-      is_planner_running_ = false;
-      nav_heading_ = Point3D(0,0,0);
-      if (is_planning_fails) { // stops the robot
-        goal_waypoint_stamped_.point = FARUtil::Point3DToGeoMsgPoint(robot_pos_);
-        goal_pub_->publish(goal_waypoint_stamped_);
-      }
-    }
-
-    // publish planner status and timers
-    auto reach_goal_msg = std_msgs::msg::Bool();
-    reach_goal_msg.data = is_reach_goal;
-    reach_goal_pub_->publish(reach_goal_msg);
-    auto traverse_timer = std_msgs::msg::Float32();
-    traverse_timer.data = FARUtil::Timer.record_time("Overall_executing");
-    traverse_time_pub_->publish(traverse_timer);
-    if (is_reach_goal) {
-      FARUtil::Timer.end_time("Overall_executing", false);
-      PublishNavigationActive(false);
-    } else if (is_planning_fails) {
-      PublishNavigationActive(false);
-    }
-
-    plan_timer_.data = FARUtil::Timer.end_time("Path Search", false);
-    planning_time_pub_->publish(plan_timer_);
+  if (odom_node_ptr_ == NULL || nav_graph_.empty()) {
+    PublishNavigationActive(false);
+    PublishPlannerStatus("PLANNING_WAIT", "START_OR_GRAPH_UNAVAILABLE",
+                         "planning deferred: start vertex or V-Graph is unavailable");
+    return;
   }
+  if (goal_ptr == NULL) {
+    graph_planner_.UpdateGraphTraverability(odom_node_ptr_, NULL);
+    return;
+  }
+  ++plan_revision_;
+  LogLifecycleTransition("GOAL_VERTEX_RESOLVED", "PLANNING");
+  const Point3D ori_p = graph_planner_.GetOriginNodePos(true);
+  PointCloudPtr goal_obs(new pcl::PointCloud<PCLPoint>());
+  PointCloudPtr goal_free(new pcl::PointCloud<PCLPoint>());
+  map_handler_.GetCloudOfPoint(ori_p, goal_obs, CloudType::OBS_CLOUD, true);
+  map_handler_.GetCloudOfPoint(ori_p, goal_free, CloudType::FREE_CLOUD, true);
+  goal_local_obs_count_ = goal_obs->size();
+  goal_local_free_count_ = goal_free->size();
+  graph_planner_.UpdateFreeTerrainGrid(ori_p, goal_obs, goal_free);
+  if (!graph_planner_.ReEvaluateGoalPosition(goal_ptr, odom_node_ptr_, !master_params_.is_multi_layer)) {
+    PublishNavigationActive(false);
+    PublishPlannerStatus("PLANNING_WAIT", "START_OR_GOAL_INVALID",
+                         "goal adjustment deferred: start or goal pose is invalid");
+    return;
+  }
+  goal_current_ = goal_ptr->position;
+  has_goal_current_ = true;
+  goal_is_in_freespace_ = graph_planner_.IsGoalInFreespace();
+
+  graph_planner_.UpdateGoalNavNodeConnects(goal_ptr);
+  graph_planner_.UpdaetVGraph(graph_manager_.GetNavGraph());
+  graph_planner_.UpdateGraphTraverability(odom_node_ptr_, goal_ptr);
+  goal_has_parent_ = goal_ptr->parent != NULL;
+  goal_has_free_parent_ = goal_ptr->free_parent != NULL;
+  goal_is_free_traversable_ = goal_ptr->is_free_traversable;
+
+  NodePtrStack candidate_path;
+  Point3D current_free_goal;
+  NavNodePtr candidate_nav;
+  bool is_planning_fails = false;
+  bool is_current_free_nav = false;
+  bool is_reach_goal = false;
+  LogLifecycleTransition("ROUTE_SEARCH_BEGIN", "PLANNING");
+  const bool path_found = graph_planner_.PathToGoal(
+      goal_ptr, candidate_path, candidate_nav, current_free_goal, is_planning_fails,
+      is_reach_goal, is_current_free_nav);
+  path_size_ = candidate_path.size();
+  planning_failed_ = is_planning_fails;
+  goal_reached_ = is_reach_goal;
+
+  const auto route_validation = FARPathValidation::ValidateRoute(candidate_path);
+  bool candidate_valid = path_found && route_validation.ok() &&
+      FARPathValidation::IsFiniteNode(candidate_nav);
+  Point3D candidate_waypoint;
+  if (candidate_valid) {
+    candidate_waypoint = candidate_nav->position;
+    if (candidate_nav != goal_ptr) candidate_waypoint = ProjectNavWaypoint(candidate_nav, nav_node_ptr_);
+    candidate_valid = std::isfinite(candidate_waypoint.x) && std::isfinite(candidate_waypoint.y) &&
+        std::isfinite(candidate_waypoint.z);
+  }
+
+  auto route_hash = [](const NodePtrStack& path) {
+    std::uint64_t value = 1469598103934665603ULL;
+    for (const auto& node : path) {
+      value ^= static_cast<std::uint64_t>(node->id);
+      value *= 1099511628211ULL;
+    }
+    return value;
+  };
+  auto route_nodes = [](const NodePtrStack& path) {
+    std::ostringstream stream;
+    for (std::size_t i = 0; i < path.size(); ++i) {
+      if (i) stream << ',';
+      stream << path[i]->id;
+    }
+    return stream.str();
+  };
+
+  if (candidate_valid && !is_reach_goal) {
+    const Point3D old_waypoint = committed_waypoint_;
+    const bool had_old_waypoint = has_committed_waypoint_;
+    const std::uint64_t candidate_hash = route_hash(candidate_path);
+    const bool waypoint_changed = !has_committed_waypoint_ ||
+        (candidate_waypoint - committed_waypoint_).norm() > FARUtil::kEpsilon;
+    const bool route_changed = !has_committed_route_ || candidate_hash != committed_route_hash_ || waypoint_changed;
+    // Commit all route metadata before publishing the corresponding waypoint.
+    // A failed candidate never mutates the committed route.
+    LogLifecycleTransition("ROUTE_SEARCH_SUCCESS", "PLANNING");
+    if (route_changed) {
+      committed_route_ = candidate_path;
+      committed_route_hash_ = candidate_hash;
+      committed_route_nodes_ = route_nodes(candidate_path);
+      committed_waypoint_ = candidate_waypoint;
+      has_committed_waypoint_ = true;
+      has_committed_route_ = true;
+      ++committed_route_revision_;
+      ++waypoint_revision_;
+      nav_node_ptr_ = candidate_nav;
+      goal_waypoint_stamped_.header.stamp = nh_->now();
+      goal_waypoint_stamped_.header.frame_id = master_params_.world_frame;
+      goal_waypoint_stamped_.point = FARUtil::Point3DToGeoMsgPoint(candidate_waypoint);
+      PublishNavigationActive(true);
+      goal_pub_->publish(goal_waypoint_stamped_);
+      planner_viz_.VizPoint3D(candidate_waypoint, "waypoint", VizColor::MAGNA, 1.5);
+      planner_viz_.VizPath(committed_route_, is_current_free_nav);
+      LogLifecycleTransition("ROUTE_PUBLISHED", "ACTIVE");
+      PublishPlannerStatus("WAYPOINT_PUBLISHED", "ROUTE_COMMITTED",
+          "validated FAR route committed and waypoint handed off", true);
+      RCLCPP_INFO(nh_->get_logger(),
+          "[FAR][ROUTE_COMMIT] goal_rev=%llu graph_rev=%llu plan_rev=%llu route_rev=%llu waypoint_rev=%llu old_wp=(%.3f,%.3f) new_wp=(%.3f,%.3f) hash=%llu nodes=%s",
+          static_cast<unsigned long long>(goal_revision_), static_cast<unsigned long long>(graph_revision_),
+          static_cast<unsigned long long>(plan_revision_), static_cast<unsigned long long>(committed_route_revision_),
+          static_cast<unsigned long long>(waypoint_revision_),
+          had_old_waypoint ? old_waypoint.x : 0.0f, had_old_waypoint ? old_waypoint.y : 0.0f,
+          candidate_waypoint.x, candidate_waypoint.y, static_cast<unsigned long long>(candidate_hash),
+          committed_route_nodes_.c_str());
+    }
+    // Re-authorize a recovered route even when its hash/waypoint did not change.
+    // Refresh its stamp only after validation; never replay a rejected route.
+    PublishNavigationActive(true);
+    if (!route_changed) {
+      goal_waypoint_stamped_.header.stamp = nh_->now();
+      goal_pub_->publish(goal_waypoint_stamped_);
+    }
+    is_planner_running_ = true;
+  } else if (!is_reach_goal) {
+    // A parent-chain inconsistency or missing graph connection is transient:
+    // retain the active goal and retry next tick, but remove the motion permit
+    // so localPlanner/pathFollower cannot continue a stale path.
+    const auto status = graph_planner_.GetLastPathStatus();
+    const std::string reason = FARPathValidation::ToString(
+        route_validation.ok() ? status : route_validation.status);
+    PublishNavigationActive(false);
+    PublishPlannerStatus("REPLANNING_STOP", reason,
+        "candidate route rejected; active goal retained for next graph update");
+    RCLCPP_WARN(nh_->get_logger(), "[FAR][REPLAN_STOP] goal_rev=%llu graph_rev=%llu plan_rev=%llu reason=%s path=%zu",
+        static_cast<unsigned long long>(goal_revision_), static_cast<unsigned long long>(graph_revision_),
+        static_cast<unsigned long long>(plan_revision_), reason.c_str(), candidate_path.size());
+  }
+
+  auto reach_goal_msg = std_msgs::msg::Bool();
+  // FAR may adjust a requested point to reachable terrain. Reaching that
+  // adjusted point is a stop, but is not success outside the requested XY tolerance.
+  const bool requested_reached = is_reach_goal && has_goal_original_ &&
+      std::hypot(robot_pos_.x - goal_original_.x, robot_pos_.y - goal_original_.y) <= gp_params_.converge_dist;
+  goal_reached_ = requested_reached;
+  reach_goal_msg.data = requested_reached;
+  reach_goal_pub_->publish(reach_goal_msg);
+  if (is_reach_goal) {
+    PublishNavigationActive(false);
+    has_committed_route_ = false;
+    committed_route_.clear();
+    has_last_requested_goal_ = false;
+
+    goal_received_ = false;
+    is_planner_running_ = false;
+    PublishPlannerStatus("NAVIGATION_STOPPED",
+        requested_reached ? "GOAL_REACHED" : "ADJUSTED_GOAL_OUTSIDE_TOLERANCE",
+        requested_reached ? "requested goal reached within XY tolerance" :
+                            "stopped at adjusted goal outside requested XY tolerance", true);
+  }
+  plan_timer_.data = 0.0F;
+  planning_time_pub_->publish(plan_timer_);
 }
 
 void FARMaster::LocalBoundaryHandler(const std::vector<PointPair>& local_boundary) {
@@ -366,17 +663,22 @@ void FARMaster::LocalBoundaryHandler(const std::vector<PointPair>& local_boundar
 
 
 Point3D FARMaster::ProjectNavWaypoint(const NavNodePtr& nav_node_ptr, const NavNodePtr& last_point_ptr) {
+  if (nav_node_ptr == NULL) {
+    RCLCPP_ERROR(nh_->get_logger(), "[FAR][ROUTE] refusing waypoint projection: candidate vertex is null");
+    return robot_pos_;
+  }
   bool is_momentum = false;
-  if (last_point_ptr == nav_node_ptr || (last_point_ptr != NULL && (last_point_ptr->position - nav_node_ptr_->position).norm() < FARUtil::kNearDist)) {
+  if (last_point_ptr == nav_node_ptr || (last_point_ptr != NULL &&
+      (last_point_ptr->position - nav_node_ptr->position).norm() < FARUtil::kNearDist)) {
     is_momentum = true;
   }
   Point3D waypoint = nav_node_ptr->position;
   float free_dist = master_params_.local_planner_range;
-  const Point3D extend_p = this->ExtendViewpointOnObsCloud(nav_node_ptr_, FARUtil::surround_obs_cloud_, free_dist);
+  const Point3D extend_p = this->ExtendViewpointOnObsCloud(nav_node_ptr, FARUtil::surround_obs_cloud_, free_dist);
   free_dist = std::max(free_dist, master_params_.robot_dim * 2.5f);
   if (master_params_.is_viewpoint_extend) {
     waypoint = extend_p;
-    planner_viz_.VizViewpointExtend(nav_node_ptr_, waypoint);
+    planner_viz_.VizViewpointExtend(nav_node_ptr, waypoint);
   }
   const Point3D diff_p = waypoint - robot_pos_;
   Point3D new_heading;
@@ -442,6 +744,16 @@ Point3D FARMaster::ExtendViewpointOnObsCloud(const NavNodePtr& nav_node_ptr, con
 
 
 void FARMaster::LoadROSParams() {
+  const int opencv_threads = nh_->declare_parameter<int>("opencv_threads", 1);
+  if (opencv_threads < 1 || opencv_threads > 16)
+    throw std::invalid_argument("opencv_threads must be 1..16");
+  // Bound this process's contour workers; leave CPU time for RL and sensors.
+  cv::setNumThreads(opencv_threads);
+  // Same physical sensor->vehicle origin used by localPlanner/pathFollower.
+  sensor_offset_x_ = nh_->declare_parameter<double>("sensor_offset_x", 0.);
+  sensor_offset_y_ = nh_->declare_parameter<double>("sensor_offset_y", 0.);
+  if (!std::isfinite(sensor_offset_x_) || !std::isfinite(sensor_offset_y_))
+    throw std::invalid_argument("sensor offsets must be finite");
   const std::string map_prefix      = "map_handler";
   const std::string scan_prefix     = "scan_handler";
   const std::string cdetect_prefix  = "c_detector";
@@ -475,6 +787,10 @@ void FARMaster::LoadROSParams() {
   nh_->get_parameter("voxel_dim", master_params_.voxel_dim);
   nh_->get_parameter("robot_dim", master_params_.robot_dim);
   nh_->get_parameter("vehicle_height", master_params_.vehicle_height);
+  auto_vehicle_height_ = nh_->declare_parameter<bool>("auto_vehicle_height", false);
+  if (!std::isfinite(master_params_.vehicle_height) || master_params_.vehicle_height <= 0.0f)
+    throw std::invalid_argument("vehicle_height must be finite and positive");
+  vehicle_height_estimator_.reset(new VehicleHeightEstimator(master_params_.vehicle_height));
   nh_->get_parameter("sensor_range", master_params_.sensor_range);
   nh_->get_parameter("terrain_range", master_params_.terrain_range);
   nh_->get_parameter("local_planner_range", master_params_.local_planner_range);
@@ -626,6 +942,12 @@ void FARMaster::LoadROSParams() {
 }
 
 void FARMaster::OdomCallBack(const nav_msgs::msg::Odometry::SharedPtr msg) {
+  if (time_reset_requested_) return;
+  const auto& p = msg->pose.pose.position;
+  const auto& q = msg->pose.pose.orientation;
+  const double norm = q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
+  if (msg->header.frame_id.empty() || !std::isfinite(p.x) || !std::isfinite(p.y) ||
+      !std::isfinite(p.z) || !std::isfinite(norm) || norm < .5 || norm > 1.5) return;
   // transform from odom frame to mapping frame
   std::string odom_frame = msg->header.frame_id;
   tf2::Transform tf_odom_pose;
@@ -647,6 +969,12 @@ void FARMaster::OdomCallBack(const nav_msgs::msg::Odometry::SharedPtr msg) {
     }
   }
   
+  // Point-LIO reports the sensor/IMU origin. Goals describe the vehicle origin;
+  // apply the configured lever arm once (including orientation), not again to clouds.
+  tf2::Transform sensor_to_vehicle;
+  sensor_to_vehicle.setIdentity();
+  sensor_to_vehicle.setOrigin(tf2::Vector3(-sensor_offset_x_, -sensor_offset_y_, 0.));
+  tf_odom_pose = tf_odom_pose * sensor_to_vehicle;
   robot_pos_.x = tf_odom_pose.getOrigin().x(); 
   robot_pos_.y = tf_odom_pose.getOrigin().y();
   robot_pos_.z = tf_odom_pose.getOrigin().z();
@@ -664,7 +992,11 @@ void FARMaster::OdomCallBack(const nav_msgs::msg::Odometry::SharedPtr msg) {
     map_handler_.UpdateRobotPosition(robot_pos_);
   }
 
+  const bool was_odom_init = is_odom_init_;
   is_odom_init_ = true;
+  if (!was_odom_init) {
+    PublishPlannerStatus("WAITING_FOR_TERRAIN", "WAITING_FOR_TERRAIN", "received first /odom_world message");
+  }
 }
 
 
@@ -689,7 +1021,12 @@ void FARMaster::ProcessCloud(const sensor_msgs::msg::PointCloud2::SharedPtr pc, 
     }
     catch(const tf2::TransformException& ex)
     {
-      RCLCPP_ERROR_STREAM(nh_->get_logger(), "Tracking cloud TF lookup: " << ex.what());
+      RCLCPP_ERROR_STREAM(nh_->get_logger(), "[FAR][CLOUD_TF_ERROR] source=" << cloud_frame
+                          << " target=" << master_params_.world_frame
+                          << " stamp=" << rclcpp::Time(pc->header.stamp).seconds()
+                          << " error=" << ex.what());
+      PublishPlannerStatus("CLOUD_TF_ERROR", "CLOUD_TF_ERROR",
+          "cloud transform failed: " + cloud_frame + " -> " + master_params_.world_frame + "; " + ex.what(), true);
       return;
     }
   }
@@ -709,7 +1046,8 @@ void FARMaster::TerrainLocalCallBack(const sensor_msgs::msg::PointCloud2::Shared
 }
 
 void FARMaster::TerrainCallBack(const sensor_msgs::msg::PointCloud2::SharedPtr pc) {
-  if (!is_odom_init_) return;
+  if (!is_odom_init_ || time_reset_requested_) return;
+  vehicle_height_updated_ = false;
   // update map grid robot center
   map_handler_.UpdateRobotPosition(FARUtil::robot_pos);
   if (!is_stop_update_) {
@@ -718,6 +1056,19 @@ void FARMaster::TerrainCallBack(const sensor_msgs::msg::PointCloud2::SharedPtr p
                                                                master_params_.terrain_range,
                                                                FARUtil::kTolerZ));
     FARUtil::ExtractFreeAndObsCloud(temp_cloud_ptr_, temp_free_ptr_, temp_obs_ptr_);
+    if (auto_vehicle_height_) {
+      std::vector<float> ground_samples;
+      for (const auto& p : temp_free_ptr_->points) {
+        const float dx = p.x - robot_pos_.x, dy = p.y - robot_pos_.y;
+        const float distance_squared = dx * dx + dy * dy;
+        // Exclude the body/feet and far terrain. No MuJoCo truth is used here.
+        if (distance_squared >= 0.25f * 0.25f && distance_squared <= 1.5f * 1.5f)
+          ground_samples.push_back(robot_pos_.z - p.z);
+      }
+      vehicle_height_updated_ = vehicle_height_estimator_->Update(
+          std::move(ground_samples), rclcpp::Time(pc->header.stamp).seconds());
+      FARUtil::vehicle_height = vehicle_height_estimator_->height();
+    }
     if (!master_params_.is_static_env) {
       FARUtil::RemoveOverlapCloud(temp_obs_ptr_, FARUtil::stack_dyobs_cloud_, true);
     }
@@ -761,7 +1112,11 @@ void FARMaster::TerrainCallBack(const sensor_msgs::msg::PointCloud2::SharedPtr p
   FARUtil::StackCloudByTime(FARUtil::cur_new_cloud_, FARUtil::stack_new_cloud_, FARUtil::kNewDecayTime, nh_);
   FARUtil::UpdateKdTrees(FARUtil::stack_new_cloud_);
 
+  const bool was_cloud_init = is_cloud_init_;
   if (!FARUtil::surround_obs_cloud_->empty()) is_cloud_init_ = true;
+  if (was_cloud_init != is_cloud_init_) {
+    PublishPlannerStatus("TERRAIN_READY", "PLANNING", "FAR obstacle-map precondition became true");
+  }
 
   /* visualize clouds */
   planner_viz_.VizPointCloud(new_PCL_pub_, FARUtil::stack_new_cloud_);
@@ -792,9 +1147,23 @@ void FARMaster::ExtractDynamicObsFromScan(const PointCloudPtr scanCloudIn,
 }
 
 void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
+  if (!is_graph_init_ || nav_graph_.empty() || odom_node_ptr_ == NULL) {
+    pending_goal_ = route_goal;
+    has_pending_goal_ = true;
+    queued_goal_lifecycle_.Queue();
+    LogLifecycleTransition("GOAL_QUEUED", "GOAL_PENDING");
+    PublishNavigationActive(false);
+    PublishPlannerStatus("GOAL_QUEUED", "GOAL_WAITING_FOR_START",
+                         "goal retained until V-Graph and start vertex are valid", true);
+    return;
+  }
+  goal_received_ = true;
+  goal_frame_ = route_goal.header.frame_id.empty() ? "N/A" : route_goal.header.frame_id;
   if (!std::isfinite(route_goal.point.x) || !std::isfinite(route_goal.point.y) ||
       !std::isfinite(route_goal.point.z) || route_goal.header.frame_id.empty()) {
     RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal with empty frame or non-finite coordinates");
+    PublishPlannerStatus("GOAL_INVALID", "GOAL_INVALID", "goal has empty frame or non-finite coordinates", true);
+    PublishNavigationActive(false);
     return;
   }
   Point3D goal_p(route_goal.point.x, route_goal.point.y, route_goal.point.z);
@@ -803,36 +1172,125 @@ void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
     if (!FARUtil::TransformPoint3DFrame(goal_frame, master_params_.world_frame, tf_buffer_, goal_p)) {
       RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal: TF %s -> %s is unavailable",
                    goal_frame.c_str(), master_params_.world_frame.c_str());
+      PublishPlannerStatus("GOAL_INVALID", "GOAL_TF_ERROR", "goal transform is unavailable", true);
+      PublishNavigationActive(false);
       return;
     }
   }
+  goal_original_ = goal_p;
+  goal_current_ = goal_p;
+  has_goal_original_ = true;
+  has_goal_current_ = true;
+  goal_local_free_count_ = 0;
+  goal_local_obs_count_ = 0;
+  path_size_ = 0;
+  planning_failed_ = false;
+  goal_reached_ = false;
+  ++goal_revision_;
+  has_committed_route_ = false;
+  has_committed_waypoint_ = false;
+  committed_route_.clear();
+  committed_route_nodes_ = "N/A";
+  // No old path may remain authorized while the new goal is being planned.
+  PublishNavigationActive(false);
   graph_planner_.UpdateGoal(goal_p);
-  PublishNavigationActive(true);
+  LogLifecycleTransition("GOAL_VERTEX_RESOLVED", "PLANNING");
+  PublishPlannerStatus("GOAL_ACCEPTED", "GOAL_ACCEPTED", "goal accepted; waiting for validated FAR route", true);
   FARUtil::Timer.start_time("Overall_executing", true);
-  // visualize original goal
   planner_viz_.VizPoint3D(goal_p, "original_goal", VizColor::RED, 1.5);
 }
 
 void FARMaster::PublishNavigationActive(bool active) {
-  navigation_active_ = active;
   if (navigation_heartbeat_pub_) {
     std_msgs::msg::String heartbeat;
-    const auto stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-    heartbeat.data = "{\"session_id\":\"" + navigation_session_ + "\",\"observed_ns\":" + std::to_string(stamp) + ",\"active\":" + (active ? "true}" : "false}");
+    const auto stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    heartbeat.data = "{\"session_id\":\"" + navigation_session_ + "\",\"observed_ns\":" +
+        std::to_string(stamp) + ",\"active\":" + (active ? "true}" : "false}");
     navigation_heartbeat_pub_->publish(heartbeat);
   }
+  if (navigation_status_published_ && navigation_active_ == active && navigation_active_pub_) return;
+  navigation_active_ = active;
   if (navigation_active_pub_) {
     std_msgs::msg::Bool msg;
     msg.data = active;
     navigation_active_pub_->publish(msg);
+    navigation_status_published_ = true;
   }
 }
 
+void FARMaster::NavigationCancelCallBack(const std_msgs::msg::Empty::SharedPtr) {
+  // This is deliberately narrower than the full environment reset: Point-LIO,
+  // terrain, and the existing visibility graph must survive a user cancel.
+  const bool had_goal = has_pending_goal_ || goal_received_ || navigation_active_ ||
+                        graph_planner_.GetGoalNodePtr() != NULL;
+  if (!had_goal) return;
+
+  PublishNavigationActive(false);
+  has_pending_goal_ = false;
+  queued_goal_lifecycle_.Clear();
+  defer_pending_goal_until_next_main_loop_ = false;
+  goal_received_ = false;
+  has_last_requested_goal_ = false;
+  has_goal_original_ = false;
+  has_goal_current_ = false;
+  has_graph_goal_origin_ = false;
+  goal_frame_ = "N/A";
+  goal_local_free_count_ = 0;
+  goal_local_obs_count_ = 0;
+  path_size_ = 0;
+  planning_failed_ = false;
+  goal_reached_ = false;
+  is_planner_running_ = false;
+  nav_heading_ = Point3D(0,0,0);
+  graph_planner_.CancelGoal();
+  committed_route_.clear();
+  has_committed_route_ = false;
+  has_committed_waypoint_ = false;
+  committed_route_nodes_ = "N/A";
+  planner_viz_.ClearNavigationVisuals();
+
+  // A navigation-active false transition is the authoritative stop signal for
+  // localPlanner.  Re-publishing the current position also supersedes any old
+  // waypoint for consumers which were already holding one.
+  goal_waypoint_stamped_.header.stamp = nh_->now();
+  goal_waypoint_stamped_.header.frame_id = master_params_.world_frame;
+  goal_waypoint_stamped_.point = FARUtil::Point3DToGeoMsgPoint(robot_pos_);
+  goal_pub_->publish(goal_waypoint_stamped_);
+  PublishPlannerStatus("NAVIGATION_CANCELLED", "CANCELLED",
+                       "goal cancelled; FAR graph and terrain preserved", true);
+  RCLCPP_INFO(nh_->get_logger(), "[FAR][CANCEL] navigation goal cleared without graph reset");
+}
+
 void FARMaster::WaypointCallBack(const geometry_msgs::msg::PointStamped::SharedPtr route_goal) {
-  if (!is_graph_init_) {
+  if (time_reset_requested_) return;
+  if (!std::isfinite(route_goal->point.x) || !std::isfinite(route_goal->point.y) ||
+      !std::isfinite(route_goal->point.z) || route_goal->header.frame_id.empty()) {
+    RCLCPP_ERROR(nh_->get_logger(), "FAR Planner rejected goal with empty frame or non-finite coordinates");
+    PublishPlannerStatus("GOAL_INVALID", "GOAL_INVALID", "goal has empty frame or non-finite coordinates", true);
+    return;
+  }
+  // Goal publishers may retransmit the same click.  A duplicate must not reset
+  // parents/route memory while PlanningCallBack is working on it.
+  if (has_last_requested_goal_ && route_goal->header.frame_id == last_requested_goal_.header.frame_id &&
+      std::fabs(route_goal->point.x - last_requested_goal_.point.x) < 1.0e-4 &&
+      std::fabs(route_goal->point.y - last_requested_goal_.point.y) < 1.0e-4 &&
+      std::fabs(route_goal->point.z - last_requested_goal_.point.z) < 1.0e-4) {
+    return;
+  }
+  last_requested_goal_ = *route_goal;
+  has_last_requested_goal_ = true;
+  LogLifecycleTransition("GOAL_RECEIVED", is_graph_init_ ? "READY" : "INITIALIZING");
+  if (!is_init_completed_ || !is_graph_init_) {
     pending_goal_ = *route_goal;
     has_pending_goal_ = true;
-    RCLCPP_INFO(nh_->get_logger(), "FAR Planner queued goal until V-Graph is initialized");
+    queued_goal_lifecycle_.Queue();
+    goal_received_ = true;
+    goal_frame_ = route_goal->header.frame_id;
+    LogLifecycleTransition("GOAL_QUEUED", "GOAL_PENDING");
+    if (is_init_completed_) {
+      PublishPlannerStatus("GOAL_QUEUED", "GOAL_QUEUED", "goal queued until V-Graph initialization", true);
+    }
     return;
   }
   SetGoal(*route_goal);
@@ -918,16 +1376,3 @@ std::unordered_set<int> MapHandler::extend_obs_indices_;
 std::unique_ptr<grid_ns::Grid<PointCloudPtr>> MapHandler::world_free_cloud_grid_;
 std::unique_ptr<grid_ns::Grid<PointCloudPtr>> MapHandler::world_obs_cloud_grid_;
 std::unique_ptr<grid_ns::Grid<std::vector<float>>> MapHandler::terrain_height_grid_;
-
-
-int main(int argc, char** argv){
-  rclcpp::init(argc, argv);
-  
-  auto far_planner_node = std::make_shared<FARMaster>();
-  far_planner_node->Init();
-  rclcpp::spin(far_planner_node->GetNodeHandle());
-
-  rclcpp::shutdown();
-
-  return 0;
-}

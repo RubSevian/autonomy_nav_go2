@@ -2,6 +2,7 @@
 #include <chrono>
 #include <vector>
 #include <fstream>
+#include <cmath>
 #include <unistd.h>
 
 #include "rclcpp/rclcpp.hpp"
@@ -147,9 +148,9 @@ void estimate_bias(){
 /**
  * State machine:
  * 0-2: step to adjust (0)
- * 2-15: purely static for calibrating bias (1), start collecting data from 3s
- * 15-35: z-axis: 80 deg/s (2)
- * 35-37: write file
+ * 2-15: purely static for calibrating bias (1), start collecting data from 5s
+ * 15-35: z-axis at rotation_speed_rps (default about 40 deg/s) (2)
+ * 35: StopMove, write file and exit (the loop breaks after writing)
  * exit 
 */
 int main(int argc, char** argv)
@@ -157,10 +158,19 @@ int main(int argc, char** argv)
     rclcpp::init(argc, argv);
     auto nh = rclcpp::Node::make_shared("calibrate_imu");
 
+    const double ang_vel = nh->declare_parameter<double>("rotation_speed_rps", 0.7);
+    if (!std::isfinite(ang_vel) || ang_vel <= 0.0 || ang_vel > 1.396) {
+        RCLCPP_ERROR(nh->get_logger(), "rotation_speed_rps must be finite and in (0, 1.396] rad/s");
+        rclcpp::shutdown();
+        return 1;
+    }
+    RCLCPP_INFO(nh->get_logger(), "Calibration rotation: %.3f rad/s (%.1f deg/s), from 15 to 35 seconds", ang_vel, ang_vel * 180.0 / 3.141592653589793);
+
     auto pubGo2Request = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
     auto pubSpeed = nh->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel", 5); // Debug purpose
 
-    auto subImu = nh->create_subscription<sensor_msgs::msg::Imu>("/utlidar/imu", 300,  imu_handler);
+    // A sensor-data subscriber matches both reliable and best-effort IMU sources.
+    auto subImu = nh->create_subscription<sensor_msgs::msg::Imu>("/utlidar/imu", rclcpp::SensorDataQoS().keep_last(300), imu_handler);
 
     geometry_msgs::msg::TwistStamped cmd_vel;
     cmd_vel.header.frame_id = "vehicle";
@@ -174,8 +184,6 @@ int main(int argc, char** argv)
 
     bool file_written = false;
     
-    double ang_vel = 1.396;
-
     while (status){
     	rclcpp::spin_some(nh);
     	

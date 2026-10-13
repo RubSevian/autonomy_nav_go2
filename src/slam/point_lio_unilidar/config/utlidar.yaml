@@ -1,3 +1,5 @@
+# Standalone mapping_utlidar.launch only. Full real_navigation.launch.py uses
+# go2_navigation_bridge/config/real_navigation.yaml exclusively.
 /**:
     ros__parameters:
         # The Go2 publishes wall-clock sensor timestamps; no /clock topic is

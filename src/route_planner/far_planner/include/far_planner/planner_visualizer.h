@@ -63,6 +63,8 @@ public:
 
     // True for non-attempts path
     void VizPath(const NodePtrStack& global_path, const bool& is_free_nav=false);
+    // Remove only goal/route markers; graph and map visualization remains live.
+    void ClearNavigationVisuals();
 
     void VizMapGrids(const PointStack& neighbor_centers, 
                      const PointStack& occupancy_centers,

@@ -3,7 +3,7 @@ project(visibility_graph_msg)
 
 # Default to C++14
 if(NOT CMAKE_CXX_STANDARD)
-  set(CMAKE_CXX_STANDARD 14)
+  set(CMAKE_CXX_STANDARD 17)
 endif()
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -20,6 +20,7 @@ find_package(rosidl_default_generators REQUIRED)
 set(msg_files
   "msg/Node.msg"
   "msg/Graph.msg"
+  "msg/LocalPathConstraint.msg"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}
