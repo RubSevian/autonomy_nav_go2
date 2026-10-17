@@ -14,6 +14,7 @@ import time
 from copy import deepcopy
 from std_msgs.msg import String
 from .time_alignment import AlignmentConfig, SensorTimeAlignment
+from .bounded_time_alignment import BoundedConfig, BoundedTimeAlignment, finite_imu_fields
 from .point_records import PointRecords
 
 import os
@@ -78,10 +79,15 @@ class Repuber(Node):
 
         self.imu_stationary_list = []
         
-        self.time_alignment = SensorTimeAlignment(AlignmentConfig(
-            **{key: param('time_' + key, value) for key, value in vars(AlignmentConfig()).items()}))
+        variant = param('time_alignment_variant', 'bounded_common_v1')
+        if variant not in ('fixed', 'bounded_common_v1'):
+            raise ValueError('unknown time alignment variant')
+        config_type, clock_type = ((BoundedConfig, BoundedTimeAlignment) if variant == 'bounded_common_v1'
+                                   else (AlignmentConfig, SensorTimeAlignment))
+        self.time_alignment = clock_type(config_type(
+            **{key: param('time_' + key, value) for key, value in vars(config_type()).items()}))
         self.time_status_pub = self.create_publisher(String, param('time_status_topic', '/utlidar/time_alignment'), 1)
-        self.create_timer(param('time_status_period_s', 1.0), self.publish_time_status)
+        self.create_timer(param('time_status_period_s', .1 if variant == 'bounded_common_v1' else 1.0), self.publish_time_status)
         self._time_state = self.time_alignment.state
         
         self.cam_offset = param('cam_offset_m', 0.046825)
@@ -212,6 +218,9 @@ class Repuber(Node):
         # records include homogeneous-coordinate bytes outside PointFields.
         records = PointRecords(points)
         transformed_points = records.points
+        if isinstance(self.time_alignment, BoundedTimeAlignment):
+            source_ns = data.header.stamp.sec * 1000000000 + data.header.stamp.nanosec
+            transformed_points['time'] = self.time_alignment.map_relative_times(source_ns, point_times)
         xyz = np.column_stack((points['x'], points['y'], points['z']))
         valid_xyz = np.isfinite(xyz).all(axis=1)
         xyz = xyz @ self._cloud_rotation.T + self._cloud_translation
@@ -238,7 +247,11 @@ class Repuber(Node):
         self.cloud_pub.publish(elevated_cloud)
 
     def publish_time_status(self):
-        self.time_status_pub.publish(String(data=json.dumps(self.time_alignment.status())))
+        if isinstance(self.time_alignment, BoundedTimeAlignment):
+            self.time_alignment.check_health(time.monotonic_ns())
+        snapshot = self.time_alignment.status()
+        snapshot['snapshot_mono_ns'] = time.monotonic_ns()
+        self.time_status_pub.publish(String(data=json.dumps(snapshot)))
 
     def map_sensor_stamp(self, stream, stamp, receive_ros_ns, receive_mono_ns, span_ns=0):
         source_ns = stamp.sec * 1000000000 + stamp.nanosec
@@ -270,6 +283,12 @@ class Repuber(Node):
 
 
     def imu_callback(self, data):    
+        if isinstance(self.time_alignment, BoundedTimeAlignment):
+            vectors = (data.angular_velocity, data.linear_acceleration, data.orientation)
+            values = tuple(getattr(v, axis) for v in vectors for axis in ('x', 'y', 'z')) + (data.orientation.w,)
+            if not finite_imu_fields(values):
+                self.time_alignment._drop('imu', 'invalid_imu_fields')
+                return
         mapped_ns = self.map_sensor_stamp('imu', data.header.stamp,
                                           self.get_clock().now().nanoseconds, time.monotonic_ns())
         if mapped_ns is None:

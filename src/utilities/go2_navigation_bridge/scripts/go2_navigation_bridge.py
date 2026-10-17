@@ -69,6 +69,9 @@ class NavigationBridge(Node):
             raise ValueError('far_route requires stack without local_route')
         self.gate = NavigationGate(mode, param('command_timeout_s', .25), param('sensor_timeout_s', .5),
                                    tuple(param(key, default) for key,default in zip(('vx_limit','vy_limit','wz_limit'),(.2,.1,.1))))
+        self.gate.clock_required = param('require_clock_alignment', False)
+        if self.gate.clock_required:
+            self.create_subscription(String, param('time_status_topic', '/utlidar/time_alignment'), self.alignment_status, 1)
         self.goals = GoalTracker(param('goal_tolerance_m', .25), param('goal_dwell_s', .5))
         self.tick_period = param('tick_period_s', .02)
         self.status_period = param('status_period_s', .2)
@@ -133,6 +136,18 @@ class NavigationBridge(Node):
         if stamp.sec < 0 or not 0 <= stamp.nanosec < 1000000000 or (stamp.sec == 0 and stamp.nanosec == 0):
             return float('inf')
         return (self.get_clock().now().nanoseconds - stamp.sec * 1000000000 - stamp.nanosec) / 1e9
+
+    def alignment_status(self, msg):
+        now = time.monotonic_ns()
+        try:
+            data = json.loads(msg.data)
+            stamp = data['snapshot_mono_ns']
+            valid = (type(stamp) is int and data.get('variant') == 'bounded_common_v1'
+                     and data.get('mapping_valid') is True and data.get('restart_required') is False)
+            age = (now - stamp) / 1e9 if type(stamp) is int else float('inf')
+            self.gate.observe_alignment(data.get('state'), valid, now / 1e9, age)
+        except (ValueError, TypeError, KeyError):
+            self.gate.observe_alignment('INVALID', False, now / 1e9)
 
     def header_valid(self, msg):
         age = self.header_age(msg)

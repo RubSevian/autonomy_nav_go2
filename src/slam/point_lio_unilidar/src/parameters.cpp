@@ -1,4 +1,6 @@
 #include "parameters.h"
+#include <cmath>
+#include <stdexcept>
 
 bool is_first_frame = true;
 
@@ -23,6 +25,10 @@ bool use_imu_as_input;
 bool space_down_sample;
 bool publish_odometry_without_downsample;
 
+int lidar_subscription_depth, imu_subscription_depth, lidar_buffer_capacity, imu_buffer_capacity;
+double timing_status_period_s, timing_warn_age_s;
+std::string timing_status_topic;
+
 int init_map_size;
 int con_frame_num;
 
@@ -45,6 +51,7 @@ bool gravity_align;
 bool non_station_start;
 
 double imu_time_inte;
+int imu_init_samples;
 
 double laser_point_cov;
 double acc_norm;
@@ -85,18 +92,28 @@ template<typename T>
 void declare_and_get_parameter(rclcpp::Node::SharedPtr node, std::string name, T& variable, const T& default_value) {
     node->declare_parameter<T>(name, default_value);
     node->get_parameter(name, variable);
-    // if (!node->get_parameter(name, variable)) {
-    //     RCLCPP_WARN(node->get_logger(), "Failed to get parameter: %s", name.c_str());
-    //     // std::cout << "Value: " << variable << std::endl;
-    // } else {
-    //     RCLCPP_INFO(node->get_logger(), "Parameter: %s", name.c_str());
-    //     // std::cout << "Value: " << variable << std::endl;
-    // }
+
 }
 
 void readParameters(rclcpp::Node::SharedPtr node)
 {
   p_pre.reset(new Preprocess());
+  declare_and_get_parameter<int>(node, "queues.lidar_subscription_depth", lidar_subscription_depth, 2);
+  declare_and_get_parameter<int>(node, "queues.imu_subscription_depth", imu_subscription_depth, 512);
+  declare_and_get_parameter<int>(node, "queues.lidar_buffer_capacity", lidar_buffer_capacity, 4);
+  declare_and_get_parameter<int>(node, "queues.imu_buffer_capacity", imu_buffer_capacity, 4000);
+  declare_and_get_parameter<double>(node, "timing.status_period_s", timing_status_period_s, 1.0);
+  declare_and_get_parameter<double>(node, "timing.warn_age_s", timing_warn_age_s, 0.5);
+  declare_and_get_parameter<std::string>(node, "timing.status_topic", timing_status_topic, "/point_lio/timing");
+  if (lidar_subscription_depth < 1 || lidar_subscription_depth > 2000 ||
+      imu_subscription_depth < 1 || imu_subscription_depth > 4000 ||
+      lidar_buffer_capacity < 2 || lidar_buffer_capacity > 200 ||
+      imu_buffer_capacity < 2 || imu_buffer_capacity > 4000 ||
+      !std::isfinite(timing_status_period_s) || timing_status_period_s <= 0 ||
+      !std::isfinite(timing_warn_age_s) || timing_warn_age_s <= 0 ||
+      timing_status_topic.empty() || timing_status_topic[0] != '/')
+      throw std::invalid_argument("Invalid Point-LIO queue/timing configuration");
+
 
   declare_and_get_parameter<bool>(node, "prop_at_freq_of_imu", prop_at_freq_of_imu, 1);
   declare_and_get_parameter<bool>(node, "use_imu_as_input", use_imu_as_input, 1);
@@ -121,6 +138,9 @@ void readParameters(rclcpp::Node::SharedPtr node)
   declare_and_get_parameter<float>(node, "mapping.det_range", DET_RANGE, 300.f);
   declare_and_get_parameter<double>(node, "mapping.fov_degree", fov_deg, 180);
   declare_and_get_parameter<bool>(node, "mapping.imu_en", imu_en, true);
+  declare_and_get_parameter<int>(node, "mapping.imu_init_samples", imu_init_samples, 100);
+  if (imu_init_samples < 1)
+    throw std::invalid_argument("mapping.imu_init_samples must be positive");
   declare_and_get_parameter<bool>(node, "mapping.start_in_aggressive_motion", non_station_start, false);
   declare_and_get_parameter<bool>(node, "mapping.extrinsic_est_en", extrinsic_est_en, true);
   declare_and_get_parameter<double>(node, "mapping.imu_time_inte", imu_time_inte, 0.005);

@@ -31,6 +31,17 @@ def _stack(context):
     parameters = module.component_parameters(profile)
     bridge_params = dict({key:(value if key == 'tf_pair_max_samples' else float(value)) for key,value in bridge.items()}, goal_tolerance_m=float(local['goal_tolerance_m']),
                          imu_topic=sensors['raw_imu_output_topic'], lidar_topic=sensors['cloud_topic'], use_sim_time=False)
+    observe_only = get('observe_only').lower()
+    if observe_only not in ('true', 'false'):
+        raise ValueError('observe_only must be true or false')
+    observe_only = observe_only == 'true'
+    if stage != 'command_test' and sensors.get('time_alignment_variant') != 'bounded_common_v1':
+        raise ValueError('Normal NAV requires bounded_common_v1 clock mapping')
+    bridge_params['require_clock_alignment'] = stage != 'command_test'
+    # Sensors/planners remain on their normal topics. Both control outputs of
+    # the adapter are disconnected from the leg controller in manual sessions.
+    bridge_remaps = [('/cmd_vel', '/diagnostics/manual_nav/cmd_vel'),
+                     ('/go2/mission/readiness', '/diagnostics/manual_nav/readiness')] if observe_only else []
     actions = []
     if stage == 'command_test':
         return [Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[dict(bridge_params, input_mode='command_test')], output='screen')]
@@ -52,7 +63,7 @@ def _stack(context):
     actions += [Node(package='tf2_ros', executable='static_transform_publisher', name='nav_map_camera_init', arguments=['--frame-id','map','--child-frame-id','camera_init']),
                 Node(package='tf2_ros', executable='static_transform_publisher', name='nav_aft_sensor', arguments=['--frame-id','aft_mapped','--child-frame-id','sensor']),
                 Node(package='tf2_ros', executable='static_transform_publisher', name='nav_sensor_vehicle', arguments=['--frame-id','sensor','--child-frame-id','vehicle','--x',str(-offsets[0]),'--y',str(-offsets[1])])]
-    actions.append(Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[dict(bridge_params, input_mode='stack', local_route=stage == 'local', far_route=stage == 'far')], output='screen'))
+    actions.append(Node(package='go2_navigation_bridge', executable='go2_navigation_bridge.py', parameters=[dict(bridge_params, input_mode='stack', local_route=stage == 'local', far_route=stage == 'far')], remappings=bridge_remaps, output='screen'))
     actions.append(Node(package='rviz2', executable='rviz2', name='real_nav_rviz',
                         arguments=['-d',str(share/'config/real_navigation.rviz')],
                         remappings=[('/goal_point', '/way_point' if stage == 'local' else '/goal_point')],
@@ -68,12 +79,18 @@ def _stack(context):
             actions.append(Node(package='far_planner', executable='far_planner', name='far_planner', parameters=[parameters['far_planner']],
                                 remappings=[('/odom_world','/state_estimation'),('/terrain_cloud','/terrain_map_ext'),('/scan_cloud','/terrain_map'),('/terrain_local_cloud','/registered_scan')], output='screen'))
             actions.append(Node(package='graph_decoder', executable='graph_decoder', name='graph_decoder', parameters=[parameters['graph_decoder']], output='screen'))
+    if stage == 'far' and profile['recording']['enabled']:
+        recording = profile['recording']
+        actions.append(Node(package='go2_navigation_bridge', executable='nav_drift.py', name='manual_drift_recorder',
+                            arguments=['--config', get('profile_path')], output='screen',
+                            sigterm_timeout=str(recording['shutdown_timeout_s']), sigkill_timeout=str(recording['shutdown_timeout_s'])))
     return actions
 
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('stage',default_value='localization'),
         DeclareLaunchArgument('rviz',default_value='false'),
+        DeclareLaunchArgument('observe_only',default_value='false'),
         DeclareLaunchArgument('calibration_path',default_value=str(Path.home()/'Desktop/imu_calib_data.yaml')),
         DeclareLaunchArgument('profile_path', default_value=str(Path(get_package_share_directory('go2_navigation_bridge'))/'config/real_navigation.yaml')),
         DeclareLaunchArgument('sensor_offset_x',default_value=''),
