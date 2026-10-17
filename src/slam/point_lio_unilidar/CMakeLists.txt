@@ -119,4 +119,19 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(bounded_sensor_queue_test tests/bounded_sensor_queue_test.cpp)
+  target_include_directories(bounded_sensor_queue_test PRIVATE src)
+  target_compile_options(bounded_sensor_queue_test PRIVATE -UNDEBUG)
+  add_test(NAME bounded_sensor_queue_test COMMAND bounded_sensor_queue_test)
+  add_executable(imu_initialization_test tests/imu_initialization_test.cpp)
+  target_include_directories(imu_initialization_test PRIVATE src)
+  ament_target_dependencies(imu_initialization_test ${dependencies})
+  target_link_libraries(imu_initialization_test ${PCL_LIBRARIES})
+  target_compile_options(imu_initialization_test PRIVATE -UNDEBUG)
+  target_compile_definitions(imu_initialization_test PRIVATE _GLIBCXX_ASSERTIONS)
+  add_test(NAME imu_initialization_test COMMAND imu_initialization_test)
+endif()
+
 ament_package()

@@ -92,6 +92,23 @@ def load_profile(path):
             if any(type(v) not in (int, float, str, bool) or type(v) in (int, float) and not math.isfinite(v) for v in sequence):
                 raise ValueError(f'Invalid parameter {name}.{key}')
     follower, point, far = nodes['pathFollower'], nodes['laserMapping'], nodes['far_planner']
+    init_samples = point.get('mapping.imu_init_samples')
+    if type(init_samples) is not int or init_samples < 1:
+        raise ValueError('mapping.imu_init_samples must be a positive integer')
+    for key,minimum,maximum in [('queues.lidar_subscription_depth',1,2000),
+                                ('queues.imu_subscription_depth',1,4000),
+                                ('queues.lidar_buffer_capacity',2,200),
+                                ('queues.imu_buffer_capacity',2,4000)]:
+        if type(point.get(key)) is not int or not minimum <= point[key] <= maximum:
+            raise ValueError('Invalid Point-LIO queue: ' + key)
+    for key in ('timing.status_period_s','timing.warn_age_s'):
+        if type(point.get(key)) not in (int,float) or not math.isfinite(point[key]) or point[key]<=0:
+            raise ValueError('Invalid Point-LIO timing: ' + key)
+    topic=point.get('timing.status_topic')
+    if not isinstance(topic,str) or not topic.startswith('/') or any(c.isspace() for c in topic):
+        raise ValueError('Invalid Point-LIO timing topic')
+    if data['recording'].get('point_lio_timing_topic')!=topic:
+        raise ValueError('Recorder and Point-LIO timing topics must match')
     if type(far.get('opencv_threads')) is not int or not 1 <= far['opencv_threads'] <= 16:
         raise ValueError('FAR opencv_threads must be an integer in 1..16')
     if follower['sendSportCommand'] is not False or follower['is_real_robot'] is not False or follower['allowStaticPath'] is not False:

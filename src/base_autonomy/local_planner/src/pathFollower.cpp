@@ -44,8 +44,6 @@
 #include "rmw/qos_profiles.h"
 
 // For real robot
-#include "unitree_api/msg/request.hpp"
-#include "common/ros2_sport_client.h"
 
 using namespace std;
 
@@ -230,8 +228,6 @@ void applyConstraint(
   refreshConstraintMatch();
 }
 
-unitree_api::msg::Request req;
-SportClient sport_req;
 
 void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
 {
@@ -626,9 +622,9 @@ int main(int argc, char** argv)
         }
         return result;
       });
-  rclcpp::Publisher<unitree_api::msg::Request>::SharedPtr pubGo2Request;
-  if (is_real_robot && sendSportCommand)
-    pubGo2Request = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
+  // Normal RL NAV follower has no actuator transport, including in its binary.
+  if (is_real_robot || sendSportCommand)
+    throw std::runtime_error("pathFollower is transport-free; use the R3 controller for locomotion");
 
   geometry_msgs::msg::TwistStamped cmd_vel;
   cmd_vel.header.frame_id = "vehicle";
@@ -639,10 +635,6 @@ int main(int argc, char** argv)
     cmd_vel.twist.linear.y = 0.0;
     cmd_vel.twist.angular.z = 0.0;
     pubSpeed->publish(cmd_vel);
-    if (enableNarrowPassageMode && is_real_robot && sendSportCommand) {
-      sport_req.StopMove(req);
-      pubGo2Request->publish(req);
-    }
   };
   const auto publishPathFollowerStatus = [&](const std::string& reason, bool odomFresh, bool pathFresh) {
     const std::string signature = reason + "|" + followerMotionModel;
@@ -1042,16 +1034,7 @@ int main(int argc, char** argv)
 
         pubSkipCount = pubSkipNum;
 
-        if (is_real_robot && sendSportCommand)
-        {
-          if (cmd_vel.twist.linear.x == 0 && cmd_vel.twist.linear.y == 0 && cmd_vel.twist.angular.z == 0){
-          	sport_req.StopMove(req);
-          }
-          else{
-               sport_req.Move(req, cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z);
-          }
-          pubGo2Request->publish(req);
-        }
+
       }
     }
 

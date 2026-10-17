@@ -1,5 +1,3 @@
-// #ifndef PARAM_H
-// #define PARAM_H
 #pragma once
 #include <rclcpp/rclcpp.hpp>
 #include <Eigen/Eigen>
@@ -17,6 +15,9 @@ extern bool prop_at_freq_of_imu, check_satu, con_frame, cut_frame;
 extern bool use_imu_as_input, space_down_sample;
 extern bool extrinsic_est_en, publish_odometry_without_downsample;
 extern int  init_map_size, con_frame_num;
+extern int lidar_subscription_depth, imu_subscription_depth, lidar_buffer_capacity, imu_buffer_capacity;
+extern double timing_status_period_s, timing_warn_age_s;
+extern std::string timing_status_topic;
 extern double match_s, satu_acc, satu_gyro, cut_frame_time_interval;
 extern float  plane_thr;
 extern double filter_size_surf_min, filter_size_map_min, fov_deg;
@@ -24,6 +25,7 @@ extern double cube_len;
 extern float  DET_RANGE;
 extern bool   imu_en, gravity_align, non_station_start;
 extern double imu_time_inte;
+extern int imu_init_samples;
 extern double laser_point_cov, acc_norm;
 extern double acc_cov_input, gyr_cov_input, vel_cov;
 extern double gyr_cov_output, acc_cov_output, b_gyr_cov, b_acc_cov;

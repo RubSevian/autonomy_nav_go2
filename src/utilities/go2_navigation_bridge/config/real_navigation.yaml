@@ -36,7 +36,7 @@ bridge:
   vy_limit: 0.1  # Финальный clamp NAV по Y, м/с; максимум контракта R3 0.10.
   wz_limit: 0.1  # Финальный clamp NAV yaw, рад/с; максимум контракта R3 0.10.
   command_timeout_s: 0.25  # Максимальный полный возраст команды, с; верхний контракт R3 0.25.
-  sensor_timeout_s: 0.5  # Максимальный возраст sensor/odom/path/TF/heartbeat/locomotion status, с.
+  sensor_timeout_s: &nav_sensor_timeout_s 0.5  # Максимальный возраст sensor/odom/path/TF/heartbeat/locomotion status, с.
   goal_dwell_s: 0.5  # Непрерывное нахождение внутри local goal tolerance до SUCCEEDED, с.
   tick_period_s: 0.02  # Период envelope readiness/скорости bridge, с; 0.02 = 50 Гц.
   status_period_s: 0.2  # Период JSON-статуса bridge, с; 0.20 = 5 Гц.
@@ -58,6 +58,7 @@ sensors:
   raw_imu_output_topic: /utlidar/transformed_raw_imu  # Калиброванный IMU С УСКОРЕНИЕМ; вход Point-LIO/bridge.
   legacy_imu_output_topic: /utlidar/transformed_imu  # Legacy IMU с обнулённым ускорением; НЕ вход Point-LIO.
   time_status_topic: /utlidar/time_alignment  # Диагностика общего clock alignment; WARMUP/LOCKED/FAULT.
+  time_alignment_variant: bounded_common_v1  # Общая bounded clock map, включая scan-end guard.
   time_warmup_s: 2.0  # Стартовое окно оценки сдвига часов без публикации cloud/IMU, с.
   time_margin_s: 0.02  # Запас к минимальному receive−measurement_end, с; не измеренная задержка сети.
   time_max_age_s: 0.5  # Предел возраста начала измерения после mapping, с; stale пакеты отбрасываются.
@@ -65,7 +66,16 @@ sensors:
   time_max_scan_duration_s: 0.2  # Максимальный относительный time точки в cloud, с.
   time_min_cloud_samples: 5  # Минимум cloud samples до фиксации общего offset.
   time_min_imu_samples: 100  # Минимум IMU samples до фиксации общего offset.
-  time_status_period_s: 1.0  # Период небольшой JSON-диагностики clock alignment, с.
+  time_status_period_s: 0.1  # Период небольшой JSON-диагностики clock alignment, с.
+  # Internal bounded clock parameters; previous values retained.
+  time_envelope_window_s: 1.0
+  time_envelope_history: 8
+  time_segment_capacity: 16
+  time_max_rate_ppm: 1000.0
+  time_rate_slew_ppm_s: 100.0
+  time_max_uncertainty_s: 0.005
+  time_small_future_ns: 2000
+  time_max_small_future_drops: 3
   cam_offset_m: 0.046825  # Прежний сдвиг облака вниз после поворота, м.
   cloud_pitch_rad: 2.8782025850555555  # Pitch LiDAR cloud→body, рад; прежняя геометрия.
   imu_pitch_rad: 2.8782025850555555  # Pitch поворота IMU orientation, рад.
@@ -212,6 +222,13 @@ nodes:
     localTerrainMapRadius: 4.0  # Радиус подмешивания local terrain в extended map, м.
   # Point-LIO: прежние эффективные utlidar.yaml + mapping_utlidar.launch значения.
   laserMapping:
+    queues.lidar_subscription_depth: 2  # DDS KeepLast облаков; старое значение2000 накапливало историю.
+    queues.imu_subscription_depth: 512  # DDS IMU history; сохраняет покрытие между LiDAR scans.
+    queues.lidar_buffer_capacity: 4  # Внутренняя очередь; выбранный scan сохраняется до sync.
+    queues.imu_buffer_capacity: 4000  # Прежний предел непрерывной IMU history; не прореживание IMU.
+    timing.status_period_s: 1.0  # Период runtime timing JSON, с; выполняется между обработками scans.
+    timing.warn_age_s: *nav_sensor_timeout_s  # Счётчик stale publication использует тот же порог NAV.
+    timing.status_topic: &point_lio_timing_topic /point_lio/timing  # Диагностика очередей/возраста поз.
     prop_at_freq_of_imu: true  # Propagation с частотой IMU.
     use_imu_as_input: false  # Модель Point-LIO; false = прежнее effective real значение, IMU включён.
     check_satu: true  # Проверять насыщение gyro/accel.
@@ -233,6 +250,7 @@ nodes:
     mapping.det_range: 100.0  # Дальность LiDAR match, м.
     mapping.fov_degree: 180.0  # Поле зрения LiDAR, град.
     mapping.imu_en: true  # Использовать IMU в Point-LIO.
+    mapping.imu_init_samples: 100  # Минимум уникальных IMU-отсчётов для начального среднего; прежний порог.
     mapping.start_in_aggressive_motion: false  # Старт без неподвижности; требует gravity_init.
     mapping.extrinsic_est_en: false  # Онлайн оценка LiDAR↔IMU extrinsics.
     mapping.imu_time_inte: 0.01  # Номинальный период IMU, с; 0.01 = 100 Гц, проверить фактическую частоту.
@@ -319,3 +337,23 @@ nodes:
   graph_decoder:
     world_frame: map  # World frame FAR/decoder; текущий контракт map.
     visual_scale_ratio: 0.5  # Масштаб graph_decoder markers.
+
+# Subscriber-only recording. No keyboard marks required.
+recording:
+  point_lio_timing_topic: *point_lio_timing_topic  # Дополнительный String status в status.jsonl.
+  enabled: true
+  shutdown_timeout_s: 30.0
+  output_root: /home/ruben/go2_diploma/sim2real/runtime
+  output_prefix: manual_rl_nav_capture
+  duration_s: 540
+  max_duration_s: 540
+  pose_capacity: 300000
+  spin_timeout_s: 0.01
+  interactive_marks: false
+  analyze_on_finish: true
+  auto_bookends: true
+  stationary_window_s: 5.0
+  stationary_max_radius_m: 0.05
+  stationary_max_yaw_range_deg: 2.0
+  minimum_stationary_s: 2.0
+  closure_average_s: 2.0

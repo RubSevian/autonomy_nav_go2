@@ -17,7 +17,7 @@ m.Node=lambda **kw:captured.append(kw) or realnode(**kw)
 with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
     f.write(b'acc_bias_x: 0\nacc_bias_y: 0\nacc_bias_z: 0\nang_bias_x: 0\nang_bias_y: 0\nang_bias_z: 0\nang_z2x_proj: 0\nang_z2y_proj: 0\n');f.flush()
     def context(stage,path=f.name):
-        c=LaunchContext();c.launch_configurations.update(stage=stage,calibration_path=path,sensor_offset_x='0.3',sensor_offset_y='0.0',profile_path=str(p.parents[1]/'config/real_navigation.yaml'));return c
+        c=LaunchContext();c.launch_configurations.update(stage=stage,observe_only='false',calibration_path=path,sensor_offset_x='0.3',sensor_offset_y='0.0',profile_path=str(p.parents[1]/'config/real_navigation.yaml'));return c
     for stage in ('command_test','localization','local','far'):
         captured.clear();actions=m._stack(context(stage));assert actions
         if stage != 'command_test':
@@ -39,6 +39,21 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
         if stage=='far':
             assert ('/terrain_cloud','/terrain_map_ext') in by_name['far_planner']['remappings']
             assert by_name['far_planner']['parameters'][0]['g_planner/converge_distance']==.25
+            recorder=by_name['manual_drift_recorder']
+            assert recorder['executable']=='nav_drift.py'
+            assert recorder['arguments']==['--config',str(p.parents[1]/'config/real_navigation.yaml')]
+        else:
+            assert 'manual_drift_recorder' not in by_name
+    c=context('far');c.launch_configurations['observe_only']='true'
+    captured.clear();m._stack(c)
+    bridge=next(x for x in captured if x['package']=='go2_navigation_bridge')
+    assert ('/cmd_vel','/diagnostics/manual_nav/cmd_vel') in bridge['remappings']
+    assert ('/go2/mission/readiness','/diagnostics/manual_nav/readiness') in bridge['remappings']
+    assert bridge['parameters'][0]['require_clock_alignment'] is True
+    relay=next(x for x in captured if x['package']=='transform_sensors')
+    assert relay['parameters'][0]['time_alignment_variant']=='bounded_common_v1'
+    assert relay['parameters'][0]['time_status_period_s']==.1
+    assert len([x for x in captured if x['package']=='point_lio_unilidar'])==1
     # Edits to ONE profile reach every consumer, without installed FAR/Point-LIO config files.
     changed=yaml.safe_load((p.parents[1]/'config/real_navigation.yaml').read_text())
     changed['bridge']['tf_pair_history_s']=1.5

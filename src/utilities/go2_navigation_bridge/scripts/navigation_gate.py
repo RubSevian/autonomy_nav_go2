@@ -4,7 +4,7 @@ import math
 ZERO = (0.0, 0.0, 0.0)
 
 class NavigationGate:
-    def __init__(self, mode='stack', command_timeout=.25, sensor_timeout=.5, limits=(.2, .1, .1)):
+    def __init__(self, mode='stack', command_timeout=.25, sensor_timeout=.5, limits=(.2, .1, .1), clock_required=False):
         if mode not in ('stack', 'command_test'):
             raise ValueError('mode must be stack or command_test')
         if not all(math.isfinite(x) and x > 0 for x in (command_timeout, sensor_timeout)):
@@ -26,6 +26,11 @@ class NavigationGate:
         self.locomotion_received = None
         self.goal_received = False
         self.block_reason = 'startup'
+        self.clock_required = clock_required
+        self.clock_valid = False
+        self.clock_received = None
+        self.clock_failed = False
+        self.clock_seen_locked = False
 
     @staticmethod
     def fresh(now, stamp, ttl):
@@ -37,7 +42,27 @@ class NavigationGate:
         if not valid:
             self.clear_request()
 
+    def observe_alignment(self, state, valid, now, header_age=0.):
+        valid = valid and state == 'LOCKED' and math.isfinite(header_age) and 0 <= header_age <= self.sensor_timeout
+        self.clock_valid = bool(valid)
+        self.clock_received = now - header_age if valid else None
+        if valid:
+            self.clock_seen_locked = True
+        elif self.clock_seen_locked or state in ('DEGRADED', 'FAULT'):
+            self.clock_failed = True
+            self.cancel()  # immutable session failure, resume() cannot rearm it
+
+    def clock_ready(self, now):
+        if not self.clock_required:
+            return True
+        if self.clock_seen_locked and not self.fresh(now, self.clock_received, self.sensor_timeout):
+            self.clock_failed = True
+            self.cancel()
+        return not self.clock_failed and self.clock_valid and self.fresh(now, self.clock_received, self.sensor_timeout)
+
     def localization_ready(self, now):
+        if not self.clock_ready(now):
+            return False
         return self.mode == 'command_test' or all(
             self.fresh(now, self.health.get(name), self.sensor_timeout)
             for name in ('lidar', 'imu', 'odom', 'tf'))

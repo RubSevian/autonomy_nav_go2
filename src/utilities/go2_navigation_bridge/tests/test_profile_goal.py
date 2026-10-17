@@ -35,6 +35,17 @@ class ProfileGoalTest(unittest.TestCase):
                 yaml.safe_dump(changed,file);file.flush()
                 with self.assertRaises(ValueError,msg=key):load_profile(file.name)
 
+    def test_invalid_pointlio_queue_settings(self):
+        profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
+        for key,value in [('queues.lidar_subscription_depth',0),('queues.imu_subscription_depth',True),
+                          ('queues.lidar_buffer_capacity',1),('queues.imu_buffer_capacity',4001),
+                          ('timing.status_period_s',0.),('timing.warn_age_s',float('nan')),
+                          ('timing.status_topic','/different_recorder_topic')]:
+            changed=copy.deepcopy(profile);changed['nodes']['laserMapping'][key]=value
+            with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as file:
+                yaml.safe_dump(changed,file);file.flush()
+                with self.assertRaises(ValueError,msg=key):load_profile(file.name)
+
     def test_duplicate_cancel_and_new_goal(self):
         g=GoalTracker();self.assertTrue(g.accept((1.,0.,0.),'map',100,1.))
         self.assertFalse(g.accept((1.,0.,0.),'map',101,2.))
@@ -42,6 +53,16 @@ class ProfileGoalTest(unittest.TestCase):
         g.active();g.finish('CANCELLED',3.)
         g.reset();self.assertTrue(g.accept((1.,0.,0.),'map',200,4.))
         self.assertEqual(g.revision,2)
+
+    def test_pointlio_unique_initialization_count(self):
+        profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
+        self.assertEqual(component_parameters(profile)['laserMapping']['mapping.imu_init_samples'],100)
+        for value in (0,-1,True,1.5,None):
+            changed=copy.deepcopy(profile)
+            changed['nodes']['laserMapping']['mapping.imu_init_samples']=value
+            with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as file:
+                yaml.safe_dump(changed,file);file.flush()
+                with self.assertRaises(ValueError):load_profile(file.name)
 
     def test_invalid_sensor_time_settings(self):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')

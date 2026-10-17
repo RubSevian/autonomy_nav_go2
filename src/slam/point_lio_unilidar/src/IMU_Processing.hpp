@@ -1,6 +1,8 @@
 #include <cmath>
 #include <math.h>
 #include <deque>
+#include <optional>
+#include <stdexcept>
 #include <mutex>
 #include <thread>
 #include <fstream>
@@ -24,14 +26,12 @@
 #include <geometry_msgs/msg/vector3.hpp>
 
 
-#define MAX_INI_COUNT (100)
-
 class ImuProcess
 {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
-  ImuProcess();
+  explicit ImuProcess(int init_samples = 100);
   ~ImuProcess();
   
   void Reset();
@@ -49,16 +49,17 @@ class ImuProcess
   bool   gravity_align_ = false;
 
  private:
-  void IMU_init(const MeasureGroup &meas, int &N);
+  void IMU_init(const MeasureGroup &meas);
   V3D mean_gyr;
-  int    init_iter_num = 1;
+  const int init_samples_;
+  int init_iter_num = 0;
+  std::optional<int64_t> last_init_stamp_ns_;
 };
 
-ImuProcess::ImuProcess()
-    : b_first_frame_(true), imu_need_init_(true), gravity_align_(false)
+ImuProcess::ImuProcess(int init_samples) : init_samples_(init_samples)
 {
+  if (init_samples < 1) throw std::invalid_argument("mapping.imu_init_samples must be positive");
   imu_en = true;
-  init_iter_num = 1;
   // mean_acc      = V3D(0, 0, -1.0);
   mean_acc      = V3D(0, 0, 0.0);
   mean_gyr      = V3D(0, 0, 0);
@@ -73,40 +74,35 @@ void ImuProcess::Reset()
   mean_acc      = V3D(0, 0, 0.0);
   mean_gyr      = V3D(0, 0, 0);
   imu_need_init_    = true;
-  init_iter_num     = 1;
+  init_iter_num     = 0;
+  last_init_stamp_ns_.reset();
+  b_first_frame_ = true;
+  gravity_align_ = false;
 }
 
-void ImuProcess::IMU_init(const MeasureGroup &meas, int &N)
+void ImuProcess::IMU_init(const MeasureGroup &meas)
 {
   /** 1. initializing the gravity, gyro bias, acc and gyro covariance
    ** 2. normalize the acceleration measurenments to unit gravity **/
-  // printf("IMU Initializing: %.1f %%", double(N) / MAX_INI_COUNT * 100);
-  std::cout << "IMU Initializing: " << double(N) / MAX_INI_COUNT * 100 << "%" << std::endl;
   V3D cur_acc, cur_gyr;
-  
-  if (b_first_frame_)
-  {
-    Reset();
-    N = 1;
-    b_first_frame_ = false;
-    const auto &imu_acc = meas.imu.front()->linear_acceleration;
-    const auto &gyr_acc = meas.imu.front()->angular_velocity;
-    mean_acc << imu_acc.x, imu_acc.y, imu_acc.z;
-    mean_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
-  }
 
   for (const auto &imu : meas.imu)
   {
+    const int64_t stamp_ns = int64_t(imu->header.stamp.sec) * 1000000000LL + imu->header.stamp.nanosec;
+    // A repeated/overlapping batch must not count an observation twice.
+    if (last_init_stamp_ns_ && stamp_ns <= *last_init_stamp_ns_) continue;
+    last_init_stamp_ns_ = stamp_ns;
+    b_first_frame_ = false;
     const auto &imu_acc = imu->linear_acceleration;
     const auto &gyr_acc = imu->angular_velocity;
     cur_acc << imu_acc.x, imu_acc.y, imu_acc.z;
     cur_gyr << gyr_acc.x, gyr_acc.y, gyr_acc.z;
 
-    mean_acc      += (cur_acc - mean_acc) / N;
-    mean_gyr      += (cur_gyr - mean_gyr) / N;
-
-    N ++;
+    ++init_iter_num;
+    mean_acc      += (cur_acc - mean_acc) / init_iter_num;
+    mean_gyr      += (cur_gyr - mean_gyr) / init_iter_num;
   }
+  std::cout << "IMU unique initialization samples: " << init_iter_num << "/" << init_samples_ << std::endl;
 }
 
 void ImuProcess::Process(const MeasureGroup &meas, PointCloudXYZI::Ptr cur_pcl_un_)
@@ -117,19 +113,18 @@ void ImuProcess::Process(const MeasureGroup &meas, PointCloudXYZI::Ptr cur_pcl_u
   if (imu_en)
   {
    
-    if(meas.imu.empty())  
-      return;
     assert(meas.lidar != nullptr);
 
    
     if (imu_need_init_)
     {
-     
-      IMU_init(meas, init_iter_num);
+      cur_pcl_un_->clear();
+      if (meas.imu.empty()) return;
+      IMU_init(meas);
 
       imu_need_init_ = true;
 
-      if (init_iter_num > MAX_INI_COUNT)
+      if (init_iter_num >= init_samples_)
       {
         // printf("IMU Initializing: %.1f %%", 100.0);
         std::cout << "IMU Initializing: 100.0%" << std::endl;
