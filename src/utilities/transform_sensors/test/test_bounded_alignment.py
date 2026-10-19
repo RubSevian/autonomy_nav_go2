@@ -131,7 +131,7 @@ class BoundedTests(unittest.TestCase):
         c=locked()
         for values in ([float('nan')],[-.1],[.201]):
             with self.assertRaises(ValueError):c.map_relative_times(S+3*NS,values)
-        for kw in ({'small_future_ns':2001},{'max_age_s':.6},{'max_rate_ppm':1001},{'segment_capacity':100}):
+        for kw in ({'small_future_ns':2001},{'max_age_s':.6},{'max_rate_ppm':2001},{'segment_capacity':100}):
             with self.assertRaises(ValueError):BoundedConfig(**kw)
 
     def test_common_map_hinges_point_layout_and_epoch_precision(self):
@@ -183,6 +183,74 @@ class BoundedTests(unittest.TestCase):
         c._envelopes.extend([(S+i*NS,R-S+(10_000_000 if i%2 else 0)) for i in range(8)])
         c._update_model();self.assertEqual(c.state,'DEGRADED')
         self.assertEqual(c.failure_reason,'envelope_uncertainty_exceeded')
+
+    def test_one_bounded_transport_slope_window_recovers_but_repeat_latches(self):
+        cfg=BoundedConfig(max_uncertainty_s=.01)
+        c=BoundedTimeAlignment(cfg);feed(c,events(3));c._high_source=S+10*NS
+        c._envelopes.clear()
+        c._envelopes.extend((S+i*NS,R-S+i*1_500_000) for i in range(6))
+        c._update_model()
+        self.assertEqual(c.state,'LOCKED')
+        self.assertEqual(c.last_rate_estimate_ppb,1_500_000)
+        self.assertLessEqual(c.last_bounded_fit_error_ns,10_000_000)
+        self.assertLessEqual(abs(c.rate_ppb),1_000_000)
+        c._envelopes.clear()
+        c._envelopes.extend((S+i*NS,R-S) for i in range(6))
+        c._update_model()
+        self.assertEqual(c.state,'LOCKED')
+        self.assertEqual(c.consecutive_out_of_bound_rate_windows,0)
+        c._envelopes.clear()
+        c._envelopes.extend((S+i*NS,R-S+i*1_500_000) for i in range(6))
+        c._update_model();self.assertEqual(c.state,'LOCKED')
+        c._update_model()
+        self.assertEqual(c.state,'DEGRADED')
+        self.assertEqual(c.failure_reason,'estimated_rate_outside_bound')
+
+    def test_out_of_bound_rate_needs_bounded_uncertainty(self):
+        c=BoundedTimeAlignment(BoundedConfig(max_uncertainty_s=.01))
+        feed(c,events(3));c._high_source=S+10*NS
+        c._envelopes.extend((S+i*NS,R-S+i*4_000_000) for i in range(8))
+        c._update_model()
+        self.assertEqual(c.state,'DEGRADED')
+        self.assertGreater(c.last_bounded_fit_error_ns,10_000_000)
+        with self.assertRaises(ValueError):
+            BoundedConfig(max_out_of_bound_rate_windows=3)
+
+    def test_configured_2000ppm_accepts_observed_1149ppm_but_keeps_other_guards(self):
+        c=BoundedTimeAlignment(BoundedConfig(max_rate_ppm=2000.0,max_uncertainty_s=.01))
+        feed(c,events(3));c._high_source=S+10*NS
+        c._envelopes.clear()
+        c._envelopes.extend((S+i*NS,R-S+i*1_149_433) for i in range(8))
+        c._update_model()
+        self.assertEqual(c.state,'LOCKED')
+        self.assertEqual(c.last_rate_estimate_ppb,1_149_433)
+        self.assertEqual(c.consecutive_out_of_bound_rate_windows,0)
+        self.assertLessEqual(abs(c.rate_ppb),2_000_000)
+        self.assertEqual(c.config.max_age_s,.5)
+        self.assertEqual(c.config.max_uncertainty_s,.01)
+        self.assertEqual(c.config.rate_slew_ppm_s,100.0)
+        with self.assertRaises(ValueError):BoundedConfig(max_rate_ppm=2000.1)
+
+    def test_configured_10ms_uncertainty_boundary(self):
+        for residual,expected in ((5_245_479,'LOCKED'),(10_000_000,'LOCKED'),(10_000_001,'DEGRADED')):
+            c=BoundedTimeAlignment(BoundedConfig(max_uncertainty_s=.01))
+            feed(c,events(3));c._high_source=S+10*NS
+            c._envelopes.extend([(S+i*NS,R-S+(residual if i%2 else 0)) for i in range(8)])
+            c._update_model()
+            self.assertEqual(c.uncertainty_ns,residual)
+            self.assertEqual(c.state,expected)
+        self.assertEqual(BoundedConfig(max_uncertainty_s=.010001).max_uncertainty_s,.010001)
+
+    def test_configured_20ms_uncertainty_boundary_keeps_age_guard(self):
+        for residual,expected in ((10_668_714,'LOCKED'),(20_000_000,'LOCKED'),(20_000_001,'DEGRADED')):
+            c=BoundedTimeAlignment(BoundedConfig(max_uncertainty_s=.02))
+            feed(c,events(3));c._high_source=S+10*NS
+            c._envelopes.extend([(S+i*NS,R-S+(residual if i%2 else 0)) for i in range(8)])
+            c._update_model()
+            self.assertEqual(c.uncertainty_ns,residual)
+            self.assertEqual(c.state,expected)
+            self.assertEqual(c.config.max_age_s,.5)
+        with self.assertRaises(ValueError):BoundedConfig(max_uncertainty_s=.020001)
 
     def test_single_positive_delay_outlier_does_not_set_rate(self):
         c=BoundedTimeAlignment();feed(c,events(25,0,jitter=True))

@@ -26,7 +26,7 @@ bool space_down_sample;
 bool publish_odometry_without_downsample;
 
 int lidar_subscription_depth, imu_subscription_depth, lidar_buffer_capacity, imu_buffer_capacity;
-double timing_status_period_s, timing_warn_age_s;
+double timing_status_period_s, timing_warn_age_s, odometry_max_publish_rate_hz;
 std::string timing_status_topic;
 
 int init_map_size;
@@ -166,6 +166,9 @@ void readParameters(rclcpp::Node::SharedPtr node)
   declare_and_get_parameter<std::vector<double>>(node, "mapping.extrinsic_T", extrinT, std::vector<double>());
   declare_and_get_parameter<std::vector<double>>(node, "mapping.extrinsic_R", extrinR, std::vector<double>());
   declare_and_get_parameter<bool>(node, "odometry.publish_odometry_without_downsample", publish_odometry_without_downsample, false);
+  declare_and_get_parameter<double>(node, "odometry.max_publish_rate_hz", odometry_max_publish_rate_hz, 0.0);
+  if (!std::isfinite(odometry_max_publish_rate_hz) || odometry_max_publish_rate_hz < 0.0 || odometry_max_publish_rate_hz > 1000.0)
+    throw std::invalid_argument("odometry.max_publish_rate_hz must be in 0..1000");
   declare_and_get_parameter<bool>(node, "publish.path_en", path_en, true);
   declare_and_get_parameter<bool>(node, "publish.scan_publish_en", scan_pub_en, 1);
   declare_and_get_parameter<bool>(node, "publish.scan_bodyframe_pub_en", scan_body_pub_en, 1);

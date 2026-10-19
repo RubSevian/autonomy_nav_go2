@@ -33,6 +33,8 @@ def load_profile(path):
         raise ValueError('TF pair history must cover sensor_timeout_s')
     if type(bridge['tf_pair_max_samples']) is not int or bridge['tf_pair_max_samples'] < 1:
         raise ValueError('TF pair sample cap must be a positive integer')
+    if type(bridge['odometry_subscription_depth']) is not int or bridge['odometry_subscription_depth'] < 1:
+        raise ValueError('Odometry subscription depth must be a positive integer')
     if local['follower_motion_model'] not in ('holonomic', 'unicycle'):
         raise ValueError('Unknown follower motion model')
     for name in ('narrow_passage', 'orientation_aware', 'narrow_recovered_selection'):
@@ -104,6 +106,9 @@ def load_profile(path):
     for key in ('timing.status_period_s','timing.warn_age_s'):
         if type(point.get(key)) not in (int,float) or not math.isfinite(point[key]) or point[key]<=0:
             raise ValueError('Invalid Point-LIO timing: ' + key)
+    publication_rate=point.get('odometry.max_publish_rate_hz')
+    if type(publication_rate) not in (int,float) or not math.isfinite(publication_rate) or not 0 <= publication_rate <= 1000:
+        raise ValueError('Invalid Point-LIO odometry.max_publish_rate_hz')
     topic=point.get('timing.status_topic')
     if not isinstance(topic,str) or not topic.startswith('/') or any(c.isspace() for c in topic):
         raise ValueError('Invalid Point-LIO timing topic')

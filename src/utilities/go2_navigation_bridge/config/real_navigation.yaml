@@ -40,9 +40,10 @@ bridge:
   goal_dwell_s: 0.5  # Непрерывное нахождение внутри local goal tolerance до SUCCEEDED, с.
   tick_period_s: 0.02  # Период envelope readiness/скорости bridge, с; 0.02 = 50 Гц.
   status_period_s: 0.2  # Период JSON-статуса bridge, с; 0.20 = 5 Гц.
-  tf_check_period_s: 0.2  # Период сверки TF с odometry, с.
+  tf_check_period_s: 0.02  # Подбор свежей TF/odom пары каждый tick; её возраст по-прежнему ограничен sensor_timeout_s.
   tf_pair_history_s: 1.0  # Временной горизонт odometry/TF, с; не меньше sensor_timeout_s; НЕ продлевает свежесть.
   tf_pair_max_samples: 2048  # Предел компактных pose-записей НА КАЖДЫЙ поток, включая версии с одинаковым stamp.
+  odometry_subscription_depth: 512  # DDS-очередь до callback; сохраняет пачки Point-LIO для согласования с TF.
   tf_pair_position_tolerance_m: 0.001  # Допуск max(|dx|,|dy|,|dz|) одной оценки odometry/TF, м; не точность стояния робота.
   tf_pair_quaternion_tolerance: 0.001  # Допуск max ошибки компонент quaternion с учётом q≡−q; НЕ радианы.
   graph_check_period_s: 0.2  # Период проверки единственного FAR heartbeat owner, с.
@@ -66,14 +67,19 @@ sensors:
   time_max_scan_duration_s: 0.2  # Максимальный относительный time точки в cloud, с.
   time_min_cloud_samples: 5  # Минимум cloud samples до фиксации общего offset.
   time_min_imu_samples: 100  # Минимум IMU samples до фиксации общего offset.
+  imu_subscription_depth: 64  # До ~0.26с IMU при 250Гц: краткая пачка сохраняется, длинная задержка вытесняет устаревшие пакеты.
   time_status_period_s: 0.1  # Период небольшой JSON-диагностики clock alignment, с.
   # Internal bounded clock parameters; previous values retained.
   time_envelope_window_s: 1.0
   time_envelope_history: 8
+  time_envelope_min_cloud_samples: 5  # Минимум облаков для обновления clock-модели за окно.
+  time_envelope_min_imu_samples: 100  # Минимум IMU для обновления модели; это не watchdog датчика.
+  time_max_skipped_envelope_windows: 1  # Одно неполное окно сохраняет прошлую модель; два подряд → DEGRADED.
+  time_max_out_of_bound_rate_windows: 1  # Одну спорную оценку частоты допускаем только при ошибке всех окон <= uncertainty; повтор → DEGRADED.
   time_segment_capacity: 16
-  time_max_rate_ppm: 1000.0
+  time_max_rate_ppm: 2000.0  # Предел fitted clock/envelope rate, 0.2%=2мс/с; не увеличивает age/uncertainty guards.
   time_rate_slew_ppm_s: 100.0
-  time_max_uncertainty_s: 0.005
+  time_max_uncertainty_s: 0.02  # Предел оценки неопределённости clock-модели, 20мс; не задержка датчиков.
   time_small_future_ns: 2000
   time_max_small_future_drops: 3
   cam_offset_m: 0.046825  # Прежний сдвиг облака вниз после поворота, м.
@@ -276,6 +282,7 @@ nodes:
     mapping.extrinsic_T: [0.007698, 0.014655, -0.00667]  # Прежняя IMU↔LiDAR трансляция XYZ, м; не offset корпуса.
     mapping.extrinsic_R: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]  # Прежняя IMU↔LiDAR матрица поворота 3×3 по строкам.
     odometry.publish_odometry_without_downsample: true  # Odometry без прореживания.
+    odometry.max_publish_rate_hz: 100.0  # Ограничение только публикации odometry+TF; EKF обрабатывает все IMU/scan.
     publish.path_en: false  # Публиковать SLAM path; remap в /point_lio/path, не local /path.
     publish.scan_publish_en: true  # Registered scan для terrain/planners; требуется true.
     publish.scan_bodyframe_pub_en: false  # Дополнительное облако в IMU-body frame.
@@ -341,6 +348,7 @@ nodes:
 # Subscriber-only recording. No keyboard marks required.
 recording:
   point_lio_timing_topic: *point_lio_timing_topic  # Дополнительный String status в status.jsonl.
+  resource_period_s: 2.0  # CPU/RAM процессов общего launch в resources.jsonl; чтение /proc, без команд роботу.
   enabled: true
   shutdown_timeout_s: 30.0
   output_root: /home/ruben/go2_diploma/sim2real/runtime

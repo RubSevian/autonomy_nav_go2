@@ -3,7 +3,7 @@
 import argparse,csv,json,math,select,signal,sys,time,shutil,subprocess
 from datetime import datetime
 from pathlib import Path
-from nav_capture_common import atomic,diagnostic_statuses,default_recording_profile,recording_config
+from nav_capture_common import atomic,diagnostic_statuses,default_recording_profile,recording_config,LaunchResourceSampler
 
 def main():
  p=argparse.ArgumentParser();p.add_argument('--config',type=Path);p.add_argument('--output',type=Path);p.add_argument('--seconds',type=int);a,ros_args=p.parse_known_args()
@@ -30,6 +30,7 @@ def main():
  n=Node('manual_drift_recorder',namespace='/diagnostics',enable_rosout=False,start_parameter_services=False,parameter_overrides=[Parameter('start_type_description_service',value=False)])
  n.destroy_publisher(n._parameter_event_publisher);n._parameter_event_publisher=None
  rows=[];events=[];streams={};phase='unmarked';stop=False;stop_reason='duration_elapsed';capture_error=None;statusfile=(out/'status.jsonl').open('w')
+ resourcefile=(out/'resources.jsonl').open('w',buffering=1);sampler=LaunchResourceSampler();next_resource_sample=time.monotonic()
  def interrupted(sig,frame):
   nonlocal stop,stop_reason
   stop=True;stop_reason=signal.Signals(sig).name
@@ -46,7 +47,8 @@ def main():
   rows.append([now,m.header.stamp.sec*10**9+m.header.stamp.nanosec,phase,m.header.frame_id,m.child_frame_id,*values,all(math.isfinite(v) for v in values) and .5<sum(v*v for v in [q.x,q.y,q.z,q.w])<1.5 and bool(m.header.frame_id),info['source_timestamp'],info['received_timestamp']])
  def state(topic,m):statusfile.write(json.dumps({'mono_ns':time.monotonic_ns(),'topic':topic,'data':m.data})+'\n')
  subs=[n.create_subscription(Odometry,'/state_estimation',odom,qos_profile_sensor_data)]
- for typ,topic in [(PointCloud2,'/utlidar/cloud'),(PointCloud2,'/registered_scan'),(Imu,'/utlidar/imu')]:subs.append(n.create_subscription(typ,topic,lambda m,t=topic:count(t,m),qos_profile_sensor_data))
+ # Counters need delivery times only, not Python objects/arrays for each cloud.
+ for typ,topic in [(PointCloud2,'/utlidar/cloud'),(PointCloud2,'/registered_scan'),(Imu,'/utlidar/imu')]:subs.append(n.create_subscription(typ,topic,lambda m,t=topic:count(t,m),qos_profile_sensor_data,raw=True))
  for topic in ['/go2/locomotion_status','/utlidar/time_alignment','/go2/navigation/status',config['point_lio_timing_topic']]:
   subs.append(n.create_subscription(String,topic,lambda m,t=topic:state(t,m),10))
  def diagnostic(topic,m):
@@ -70,6 +72,10 @@ def main():
  try:
   while not stop and time.monotonic()-begin<a.seconds:
    rclpy.spin_once(n,timeout_sec=config['spin_timeout_s'])
+   if time.monotonic()>=next_resource_sample:
+    try:resourcefile.write(json.dumps(sampler.sample())+'\n')
+    except Exception as error:events.append({'mono_ns':time.monotonic_ns(),'resource_sample_error':type(error).__name__+': '+str(error)})
+    next_resource_sample=time.monotonic()+config['resource_period_s']
    if config['interactive_marks'] and sys.stdin.isatty() and select.select([sys.stdin],[],[],0)[0]:
     value=sys.stdin.readline().strip();name={'1':'START_STATIONARY','2':'MOVING','3':'RETURN_STATIONARY'}.get(value)
     if value=='q':stop=True;stop_reason='operator_q'
@@ -83,7 +89,7 @@ def main():
    w=csv.writer(f);w.writerow(['receipt_mono_ns','header_ns','phase','frame','child','x','y','z','qx','qy','qz','qw','yaw','finite','dds_source_ns','dds_received_ns']);w.writerows(rows)
   atomic(out/'marks.json',events);atomic(out/'streams.json',streams)
   atomic(out/'capture.json',{'duration_s':time.monotonic()-begin,'planned_duration_s':a.seconds,'poses':len(rows),'capacity':config['pose_capacity'],'complete':capture_error is None and len(rows)<config['pose_capacity'],'stop_reason':stop_reason,'error':capture_error,'recording_config':config,'config_path':str(a.config.resolve()),'own_publishers':n.get_publisher_names_and_types_by_node(n.get_name(),n.get_namespace()),'own_clients':n.get_client_names_and_types_by_node(n.get_name(),n.get_namespace()),'queue_drops':'NOT_OBSERVABLE','ground_truth':False})
-  statusfile.close();n.destroy_node();rclpy.shutdown()
+  statusfile.close();resourcefile.close();n.destroy_node();rclpy.shutdown()
  if config['analyze_on_finish']:
   subprocess.run([sys.executable,str(Path(__file__).with_name('nav_drift_analyze.py')),str(out)],check=True)
  print('Saved recording: '+str(out),flush=True)

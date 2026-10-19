@@ -121,6 +121,10 @@ install(
 
 if(BUILD_TESTING)
   enable_testing()
+  add_executable(odom_publication_gate_test tests/odom_publication_gate_test.cpp)
+  target_include_directories(odom_publication_gate_test PRIVATE src)
+  target_compile_options(odom_publication_gate_test PRIVATE -UNDEBUG)
+  add_test(NAME odom_publication_gate_test COMMAND odom_publication_gate_test)
   add_executable(bounded_sensor_queue_test tests/bounded_sensor_queue_test.cpp)
   target_include_directories(bounded_sensor_queue_test PRIVATE src)
   target_compile_options(bounded_sensor_queue_test PRIVATE -UNDEBUG)

@@ -29,7 +29,7 @@ def _stack(context):
             profile['robot'][key] = value
     robot, local, bridge, sensors = (profile[name] for name in ('robot','local','bridge','sensors'))
     parameters = module.component_parameters(profile)
-    bridge_params = dict({key:(value if key == 'tf_pair_max_samples' else float(value)) for key,value in bridge.items()}, goal_tolerance_m=float(local['goal_tolerance_m']),
+    bridge_params = dict({key:(value if key in ('tf_pair_max_samples', 'odometry_subscription_depth') else float(value)) for key,value in bridge.items()}, goal_tolerance_m=float(local['goal_tolerance_m']),
                          imu_topic=sensors['raw_imu_output_topic'], lidar_topic=sensors['cloud_topic'], use_sim_time=False)
     observe_only = get('observe_only').lower()
     if observe_only not in ('true', 'false'):

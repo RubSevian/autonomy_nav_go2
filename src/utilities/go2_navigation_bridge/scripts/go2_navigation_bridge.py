@@ -9,7 +9,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.signals import SignalHandlerOptions
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, DurabilityPolicy, qos_profile_sensor_data
+from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy, qos_profile_sensor_data
 from geometry_msgs.msg import TwistStamped, PointStamped
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import Imu, PointCloud2
@@ -18,6 +18,7 @@ from std_srvs.srv import Trigger
 from navigation_gate import NavigationGate
 from diagnostic_msgs.msg import DiagnosticArray
 from navigation_goal import GoalTracker
+from mission_health import MissionHealth
 from navigation_contract import valid_cloud_layout, locomotion_ready
 from localization_pairing import LocalizationPairing, PairingConfig, PoseSample, PairLookupError, pose_errors
 from tf2_ros import Buffer, TransformListener, TransformException
@@ -97,6 +98,8 @@ class NavigationBridge(Node):
             position_tolerance_m=param('tf_pair_position_tolerance_m', .001),
             quaternion_tolerance=param('tf_pair_quaternion_tolerance', .001)))
         self.session = uuid.uuid4().hex
+        self.mission_health = MissionHealth(param('mission_health_timeout_s', .25))
+        self.create_subscription(String, '/go2/mission/health', self.mission_observation, 1)
         self.active_hint = False
         self.local_enabled = False
         self.last_odom_frame = ''
@@ -115,7 +118,10 @@ class NavigationBridge(Node):
         self.active_pub = self.create_publisher(Bool, '/navigation_active', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)) if self.local_route else None
         self.create_subscription(TwistStamped, '/navigation/cmd_vel', self.command, 1)
         self.create_subscription(String, '/go2/locomotion_status', self.locomotion, 1)
-        self.create_subscription(Odometry, '/state_estimation', self.odom, qos_profile_sensor_data)
+        odom_depth=param('odometry_subscription_depth',512)
+        if type(odom_depth) is not int or odom_depth<1:raise ValueError('odometry_subscription_depth must be positive integer')
+        self.create_subscription(Odometry, '/state_estimation', self.odom,
+            QoSProfile(depth=odom_depth,reliability=ReliabilityPolicy.BEST_EFFORT))
         self.create_subscription(Imu, param('imu_topic', '/utlidar/transformed_raw_imu'), self.imu, qos_profile_sensor_data)
         self.create_subscription(PointCloud2, param('lidar_topic', '/utlidar/transformed_cloud'), self.cloud, qos_profile_sensor_data)
         self.create_subscription(Path, '/path', self.path, 1)
@@ -130,6 +136,13 @@ class NavigationBridge(Node):
         self.gate.observe('stop', True, time.monotonic())
         self.create_timer(self.tick_period, self.tick)
         self.get_logger().info('NAV request adapter mode=' + mode + '; no locomotion/Sport ownership')
+
+    def mission_observation(self, msg, info):
+        now=time.monotonic_ns()
+        self.mission_health.graph([x.endpoint_gid for x in self.get_publishers_info_by_topic('/go2/mission/health')],now)
+        # Jazzy's Python MessageInfo has no publisher GID; use unique endpoint,
+        # post-discovery monotonic stamp and immutable session as the lease.
+        self.mission_health.observe(msg.data, self.mission_health.gid or b'', now, self.session)
 
     def header_age(self, msg):
         stamp = msg.header.stamp
@@ -184,6 +197,9 @@ class NavigationBridge(Node):
         self.gate.observe('path', valid, time.monotonic(), self.header_age(msg))
 
     def goal(self, msg):
+        if self.mission_health.base_locked:
+            self.get_logger().warn('Mission base lock latched; new goal rejected for this session')
+            return
         stamp = msg.header.stamp.sec * 1000000000 + msg.header.stamp.nanosec
         valid = (not self.gate.cancelled and stamp > self.goal_after_ns and
                  self.header_valid(msg) and msg.header.frame_id in ('map', 'camera_init') and
@@ -347,13 +363,16 @@ class NavigationBridge(Node):
                 self.last_graph_check = now
             if self.active_owner_gid is None:
                 self.gate.planner_active(False, now)
+        self.mission_health.graph([x.endpoint_gid for x in self.get_publishers_info_by_topic('/go2/mission/health')], time.monotonic_ns())
         now = time.monotonic()  # graph/TF work must not renew an aged request
         if self.active_hint and self.gate.goal_received:
             self.goals.active()
         value = self.gate.output(now)
         enabled = self.gate.enabled(now)
+        if self.mission_health.base_locked:
+            value, enabled = (0.,0.,0.), False
         age = (now - self.gate.request_received + self.gate.request_header_age) if value != (0.,0.,0.) else 0.
-        ready = String(data=json.dumps(dict(observed_ns=time.monotonic_ns(), session_id=self.session, navigation_ready=self.gate.localization_ready(now), perception_ready=False, command_enabled=enabled, command=list(value), command_age_s=age)))
+        ready = String(data=json.dumps(dict(observed_ns=time.monotonic_ns(), session_id=self.session, navigation_ready=self.gate.localization_ready(now), perception_ready=self.mission_health.valid(time.monotonic_ns(), self.session), command_enabled=enabled, command=list(value), command_age_s=age)))
         self.ready_pub.publish(ready)
         msg = TwistStamped()
         msg.header.frame_id = 'vehicle'
@@ -364,7 +383,7 @@ class NavigationBridge(Node):
         if now - self.last_status_publish < self.status_period:
             return
         self.last_status_publish = now
-        self.status_pub.publish(String(data=json.dumps(dict(goal=self.goals.snapshot(now), session_id=self.session, input_mode=self.gate.mode, navigation_ready=self.gate.localization_ready(now), command_enabled=enabled, cancel_latched=self.gate.cancelled, far_cancel_pending=self.far_cancel_pending or self.far_cancel_future is not None, new_goal_required=self.gate.mode=="stack" and not self.gate.goal_received, block_reason=self.gate.block_reason, tf_error=self.tf_error, tf_pair=self.pairing.snapshot(self.get_clock().now().nanoseconds), health_ages={name: None if stamp is None else now-stamp for name,stamp in self.gate.health.items()}, odom_frame=self.last_odom_frame, command=list(value)))))
+        self.status_pub.publish(String(data=json.dumps(dict(observed_ns=time.monotonic_ns(), goal=self.goals.snapshot(now), session_id=self.session, input_mode=self.gate.mode, navigation_ready=self.gate.localization_ready(now), command_enabled=enabled, cancel_latched=self.gate.cancelled, far_cancel_pending=self.far_cancel_pending or self.far_cancel_future is not None, new_goal_required=self.gate.mode=="stack" and not self.gate.goal_received, block_reason=self.gate.block_reason, tf_error=self.tf_error, tf_pair=self.pairing.snapshot(self.get_clock().now().nanoseconds), health_ages={name: None if stamp is None else now-stamp for name,stamp in self.gate.health.items()}, odom_frame=self.last_odom_frame, command=list(value)))))
 
 def main():
     # Stop spin in the Python thread before destroying DDS handles. The default

@@ -84,7 +84,7 @@ class GoalTracker:
         self.state, self.finished = state, now
 
     def snapshot(self, now):
-        return dict(revision=self.revision, state=self.state, frame=self.frame,
+        return dict(revision=self.revision, stamp_ns=self.stamp_ns, state=self.state, frame=self.frame,
                     requested=list(self.target) if self.target else None,
                     error_xy_m=self.error_xy, tolerance_m=self.tolerance,
                     elapsed_s=None if self.started is None else (self.finished or now)-self.started,

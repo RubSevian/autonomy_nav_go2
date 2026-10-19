@@ -16,7 +16,7 @@ extern bool use_imu_as_input, space_down_sample;
 extern bool extrinsic_est_en, publish_odometry_without_downsample;
 extern int  init_map_size, con_frame_num;
 extern int lidar_subscription_depth, imu_subscription_depth, lidar_buffer_capacity, imu_buffer_capacity;
-extern double timing_status_period_s, timing_warn_age_s;
+extern double timing_status_period_s, timing_warn_age_s, odometry_max_publish_rate_hz;
 extern std::string timing_status_topic;
 extern double match_s, satu_acc, satu_gyro, cut_frame_time_interval;
 extern float  plane_thr;

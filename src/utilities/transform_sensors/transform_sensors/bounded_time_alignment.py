@@ -34,9 +34,19 @@ class BoundedConfig(AlignmentConfig):
     max_uncertainty_s: float = .005
     small_future_ns: int = 2000
     max_small_future_drops: int = 3
+    envelope_min_cloud_samples: int = 5
+    envelope_min_imu_samples: int = 100
+    max_skipped_envelope_windows: int = 1
+    max_out_of_bound_rate_windows: int = 1
 
     def __post_init__(self):
         super().__post_init__()
+        for key in ('envelope_min_cloud_samples', 'envelope_min_imu_samples', 'max_skipped_envelope_windows',
+                    'max_out_of_bound_rate_windows'):
+            if type(getattr(self, key)) is not int or getattr(self, key) < 1:
+                raise ValueError(key)
+        if self.max_skipped_envelope_windows > 2 or self.max_out_of_bound_rate_windows > 2:
+            raise ValueError('at most two uncertain clock windows may be held')
         for key in ('envelope_window_s', 'max_rate_ppm', 'rate_slew_ppm_s', 'max_uncertainty_s'):
             v = getattr(self, key)
             if type(v) not in (int, float) or not math.isfinite(v) or v <= 0:
@@ -46,9 +56,9 @@ class BoundedConfig(AlignmentConfig):
                 raise ValueError(key)
         # Hard diagnostic bounds prevent configuration from bypassing guards.
         if (not 4 <= self.envelope_history <= 16 or not 8 <= self.segment_capacity <= 32
-                or not .5 <= self.envelope_window_s <= 2 or self.max_rate_ppm > 1000
+                or not .5 <= self.envelope_window_s <= 2 or self.max_rate_ppm > 2000
                 or self.rate_slew_ppm_s > 100 or self.small_future_ns > 2000
-                or self.max_small_future_drops > 3 or self.max_uncertainty_s > .005
+                or self.max_small_future_drops > 3 or self.max_uncertainty_s > .02
                 or self.max_age_s != .5 or self.clock_jump_s > .1
                 or self.max_scan_duration_s > .2 or self.margin_s != .02):
             raise ValueError('outside bounded diagnostic contract')
@@ -81,6 +91,12 @@ class BoundedTimeAlignment(SensorTimeAlignment):
         self.failure_reason = ''
         self.last_end_residual_ns = dict(cloud=None, imu=None)
         self._ever_locked = False
+        self.skipped_envelope_windows = 0
+        self.consecutive_skipped_windows = 0
+        self._last_complete_envelope_mono = None
+        self.consecutive_out_of_bound_rate_windows = 0
+        self.last_rate_estimate_ppb = None
+        self.last_bounded_fit_error_ns = None
 
     def _drop(self, stream, reason, fault=False):
         self.reject_reasons[stream + ':' + reason] += 1
@@ -150,7 +166,8 @@ class BoundedTimeAlignment(SensorTimeAlignment):
         if self._window_start is None:
             self._window_start = receive_mono
         if receive_mono - self._window_start >= round(self.config.envelope_window_s * NS):
-            required = dict(cloud=5, imu=100)
+            required = dict(cloud=self.config.envelope_min_cloud_samples,
+                            imu=self.config.envelope_min_imu_samples)
             sufficient = self._window_min is not None and all(self._window_counts[s] >= n for s, n in required.items())
             self._window_history.append(dict(start_mono_ns=self._window_start,
                                              end_mono_ns=receive_mono,
@@ -159,11 +176,19 @@ class BoundedTimeAlignment(SensorTimeAlignment):
                                              sufficient=sufficient,
                                              closing_stream=stream))
             if sufficient:
+                self.consecutive_skipped_windows = 0
+                self._last_complete_envelope_mono = receive_mono
                 self._envelopes.append(self._window_min)
                 if len(self._envelopes) >= 4:
                     self._update_model()
             else:
-                self._degrade('insufficient_common_envelope_samples')
+                self.skipped_envelope_windows += 1
+                self.consecutive_skipped_windows += 1
+                # Keep the last continuous mapping for one incomplete window;
+                # do not fit a clock update from an undersampled envelope.
+                # Every packet still passes dropout/age/future/jump checks.
+                if self.consecutive_skipped_windows > self.config.max_skipped_envelope_windows:
+                    self._degrade('insufficient_common_envelope_samples')
             self._window_start = receive_mono
             self._window_min = None
             self._window_counts = dict(cloud=0, imu=0)
@@ -185,13 +210,31 @@ class BoundedTimeAlignment(SensorTimeAlignment):
             self._degrade('envelope_not_observable')
             return
         estimate = round(median(slopes))
+        self.last_rate_estimate_ppb = estimate
         bound = round(self.config.max_rate_ppm * 1000)
         if abs(estimate) > bound:
-            self._degrade('estimated_rate_outside_bound')
-            return
+            # Envelope slopes include variable one-way delivery time. One
+            # implausible slope is not proof that the sensor clock changed.
+            # Keep the mapped rate bounded, but permit only one such window,
+            # and only if every retained envelope fits within the existing
+            # uncertainty limit under a bounded-rate model.
+            self.consecutive_out_of_bound_rate_windows += 1
+            bounded = max(-bound, min(bound, estimate))
+            ref_source, ref_q = points[-1]
+            self.last_bounded_fit_error_ns = max(
+                abs((q - ref_q) - div_round((x - ref_source) * bounded, NS))
+                for x, q in points)
+            if (self.consecutive_out_of_bound_rate_windows > self.config.max_out_of_bound_rate_windows
+                    or self.last_bounded_fit_error_ns > round(self.config.max_uncertainty_s * NS)):
+                self._degrade('estimated_rate_outside_bound')
+                return
+            estimate = bounded
+        else:
+            self.consecutive_out_of_bound_rate_windows = 0
+            self.last_bounded_fit_error_ns = None
         ref_source, ref_q = points[-1]
         errors = sorted(abs((q - ref_q) - div_round((x - ref_source) * estimate, NS)) for x, q in points)
-        self.uncertainty_ns = errors[(len(errors) - 1) * 3 // 4]
+        self.uncertainty_ns = max(errors) if self.consecutive_out_of_bound_rate_windows else errors[(len(errors) - 1) * 3 // 4]
         if self.uncertainty_ns > round(self.config.max_uncertainty_s * NS):
             self._degrade('envelope_uncertainty_exceeded')
             return
@@ -256,6 +299,15 @@ class BoundedTimeAlignment(SensorTimeAlignment):
             self._segments.append((source_ns - NS, source_ns - NS + self.offset_ns, 0))
             self.state = 'LOCKED'
             self._ever_locked = True
+            self._last_complete_envelope_mono = receive_mono_ns
+        if self.consecutive_skipped_windows:
+            # Bound extrapolation while holding the last model. Source and
+            # held-map rates may differ by twice the permitted rate bound.
+            held_s=(receive_mono_ns-self._last_complete_envelope_mono)/NS
+            uncertainty=self.uncertainty_ns/NS+held_s*2*self.config.max_rate_ppm/1e6
+            if uncertainty>self.config.max_uncertainty_s:
+                self._degrade('held_clock_uncertainty_exceeded')
+                return self._drop(stream,self.failure_reason)
         try:
             mapped = self.map_time(source_ns)
             end = self.map_time(source_ns + span_ns)
@@ -300,6 +352,11 @@ class BoundedTimeAlignment(SensorTimeAlignment):
                       last_end_residual_ns=dict(self.last_end_residual_ns),
                       envelope_window_counts=dict(self._window_counts),
                       envelope_window_history=list(self._window_history),
+                      skipped_envelope_windows=self.skipped_envelope_windows,
+                      consecutive_skipped_windows=self.consecutive_skipped_windows,
+                      consecutive_out_of_bound_rate_windows=self.consecutive_out_of_bound_rate_windows,
+                      last_rate_estimate_ppb=self.last_rate_estimate_ppb,
+                      last_bounded_fit_error_ns=self.last_bounded_fit_error_ns,
                       envelope_counting='half_open_receive_time_v2',
                       mapping_valid=self.state == 'LOCKED', restart_required=self.state in ('DEGRADED', 'FAULT'),
                       motion_authorized=False, clock_rate_identified=False)

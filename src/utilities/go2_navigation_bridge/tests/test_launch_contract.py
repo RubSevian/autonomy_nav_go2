@@ -20,6 +20,9 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
         c=LaunchContext();c.launch_configurations.update(stage=stage,observe_only='false',calibration_path=path,sensor_offset_x='0.3',sensor_offset_y='0.0',profile_path=str(p.parents[1]/'config/real_navigation.yaml'));return c
     for stage in ('command_test','localization','local','far'):
         captured.clear();actions=m._stack(context(stage));assert actions
+        bridge_parameters=next(x for x in captured if x['package']=='go2_navigation_bridge')['parameters'][0]
+        assert type(bridge_parameters['odometry_subscription_depth']) is int
+        assert bridge_parameters['odometry_subscription_depth']==512
         if stage != 'command_test':
             base=[x for x in captured if x.get('name')=='nav_sensor_vehicle']
             assert len(base)==1 and '--x' in base[0]['arguments']

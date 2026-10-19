@@ -20,6 +20,21 @@ def vehicle(odom, tf):
 
 
 class PairingTest(unittest.TestCase):
+    def test_configured_search_period_avoids_expiry_between_available_pairs(self):
+        import yaml
+        cfg=yaml.safe_load((Path(__file__).resolve().parents[1]/'config/real_navigation.yaml').read_text())['bridge']
+        def expired_ticks(period):
+            p=LocalizationPairing(PairingConfig(max_age_s=cfg['sensor_timeout_s']))
+            last=0;expired=0
+            for now in range(10_000_000_000,12_000_000_000,20_000_000):
+                pose=sample(now-380_000_000)
+                p.observe_odom(pose);p.observe_tf(pose)
+                if now-last>=int(period*1e9):p.select(now,vehicle);last=now
+                if p.selected is None or now-p.selected.odom.stamp_ns>int(cfg['sensor_timeout_s']*1e9):expired+=1
+            return expired
+        self.assertGreater(expired_ticks(.2),0)
+        self.assertEqual(expired_ticks(cfg['tf_check_period_s']),0)
+
     def test_four_actual_messages_and_equal_stamp_revisions(self):
         rows = json.loads((Path(__file__).parent / 'data/tf_duplicate_revisions.json').read_text())['messages']
         pairing = LocalizationPairing(PairingConfig())

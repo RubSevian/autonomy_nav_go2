@@ -16,6 +16,46 @@ def boundary_rows():
 
 
 class EnvelopeWindowTests(unittest.TestCase):
+    def undersampled_clock(self):
+        clock=BoundedTimeAlignment()
+        for arrival,stream,source,span in events(3):
+            clock.map_stamp(stream,source,R+arrival,M+arrival,span)
+        clock._window_start=M+3*NS
+        clock._window_counts=dict(cloud=14,imu=95)
+        clock._window_min=(S+3*NS,R-S)
+        return clock
+
+    def test_95_imu_window_skips_fit_then_recovers_with_sufficient_window(self):
+        clock=self.undersampled_clock();updates=clock.model_updates
+        clock._observe_envelope('cloud',S+4*NS,R+4*NS,M+4*NS)
+        self.assertEqual(clock.state,'LOCKED');self.assertEqual(clock.model_updates,updates)
+        self.assertEqual(clock.skipped_envelope_windows,1)
+        clock._window_counts=dict(cloud=15,imu=200)
+        clock._observe_envelope('imu',S+5*NS,R+5*NS,M+5*NS)
+        self.assertEqual(clock.state,'LOCKED');self.assertEqual(clock.consecutive_skipped_windows,0)
+
+    def test_two_incomplete_windows_still_latch(self):
+        clock=self.undersampled_clock()
+        clock._observe_envelope('cloud',S+4*NS,R+4*NS,M+4*NS)
+        clock._window_counts=dict(cloud=14,imu=95)
+        clock._observe_envelope('cloud',S+5*NS,R+5*NS,M+5*NS)
+        self.assertEqual(clock.failure_reason,'insufficient_common_envelope_samples')
+        self.assertTrue(clock.status()['restart_required'])
+
+    def test_incomplete_window_does_not_allow_sensor_dropout(self):
+        clock=self.undersampled_clock()
+        clock._observe_envelope('cloud',S+4*NS,R+4*NS,M+4*NS)
+        self.assertFalse(clock.check_health(M+5*NS))
+        self.assertEqual(clock.failure_reason,'sensor_dropout_restart_required')
+
+    def test_held_model_uncertainty_is_bounded_even_with_fresh_packets(self):
+        clock=self.undersampled_clock()
+        clock.consecutive_skipped_windows=1
+        clock.uncertainty_ns=4_900_000
+        clock._last_complete_envelope_mono=M+2*NS
+        self.assertIsNone(clock.map_stamp('imu',S+3*NS,R+3*NS+2_000_000,M+3*NS+2_000_000))
+        self.assertEqual(clock.failure_reason,'held_clock_uncertainty_exceeded')
+
     def test_valid_five_cloud_window_keeps_lock_when_closing_stream_changes(self):
         clock=BoundedTimeAlignment()
         for arrival,stream,source,span in boundary_rows():
@@ -27,14 +67,15 @@ class EnvelopeWindowTests(unittest.TestCase):
         self.assertEqual(closed['closing_stream'],'imu')
         self.assertTrue(closed['sufficient'])
 
-    def test_real_four_cloud_window_still_latches_degraded(self):
+    def test_one_four_cloud_window_holds_previous_model(self):
         clock=BoundedTimeAlignment()
         for arrival,stream,source,span in boundary_rows():
             if stream=='cloud' and source==S+3*NS+400_000_000:
                 continue
             clock.map_stamp(stream,source,R+arrival,M+arrival,span)
             if clock.state=='DEGRADED':break
-        self.assertEqual(clock.failure_reason,'insufficient_common_envelope_samples')
+        self.assertEqual(clock.state,'LOCKED')
+        self.assertEqual(clock.consecutive_skipped_windows,1)
         failed=clock.status()['envelope_window_history'][-1]
         self.assertEqual(failed['counts']['cloud'],4)
         self.assertEqual(failed['required_counts'],dict(cloud=5,imu=100))
@@ -53,7 +94,8 @@ class EnvelopeWindowTests(unittest.TestCase):
         for arrival,stream,source,span in sorted(rows):
             clock.map_stamp(stream,source,R+arrival,M+arrival,span)
             if clock.state=='DEGRADED':break
-        self.assertEqual(clock.failure_reason,'insufficient_common_envelope_samples')
+        self.assertEqual(clock.state,'LOCKED')
+        self.assertEqual(clock.consecutive_skipped_windows,1)
         failed=clock.status()['envelope_window_history'][-1]
         self.assertEqual(failed['counts']['cloud'],4)
         self.assertEqual(failed['closing_stream'],'cloud')

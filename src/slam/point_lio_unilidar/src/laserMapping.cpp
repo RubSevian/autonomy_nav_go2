@@ -28,6 +28,7 @@
 #include <geometry_msgs/msg/vector3.hpp>
 // #include <livox_ros_driver/CustomMsg.h>
 #include <nav_msgs/msg/odometry.hpp>
+#include "odom_publication_gate.h"
 #include <nav_msgs/msg/path.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -89,7 +90,7 @@ deque<sensor_msgs::msg::Imu::ConstSharedPtr> imu_deque;
 rclcpp::Clock::SharedPtr mapping_clock;
 int64_t last_odom_header_ns = 0;
 int64_t last_odom_publish_ns = 0;
-size_t odom_published = 0, odom_published_stale = 0;
+size_t odom_published = 0, odom_published_stale = 0, odom_publication_skipped = 0;
 double max_odom_publication_age_s = 0.0;
 
 PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
@@ -697,6 +698,15 @@ void set_posestamp(T &out)
 
 void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped)
 {
+    static OdomPublicationGate publication_gate(odometry_max_publish_rate_hz);
+    if (publish_odometry_without_downsample) {
+        const auto now_steady_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (!publication_gate.ShouldPublish(now_steady_ns)) {
+            ++odom_publication_skipped;
+            return;
+        }
+    }
     odomAftMapped.header.frame_id = "camera_init";
     odomAftMapped.child_frame_id = "aft_mapped";
     if (publish_odometry_without_downsample)
@@ -869,6 +879,8 @@ int RunMapping()
              << ",\"dropped_lidar_scans\":" << dropped_lidar_scans
              << ",\"dropped_imu_samples\":" << dropped_imu_samples
              << ",\"odom_published\":" << odom_published
+             << ",\"odom_publication_skipped\":" << odom_publication_skipped
+             << ",\"odom_max_publish_rate_hz\":" << odometry_max_publish_rate_hz
              << ",\"odom_published_stale\":" << odom_published_stale
              << ",\"last_odom_header_ns\":" << last_odom_header_ns
              << ",\"last_odom_publish_ns\":" << last_odom_publish_ns

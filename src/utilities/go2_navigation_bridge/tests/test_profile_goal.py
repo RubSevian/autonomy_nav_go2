@@ -40,6 +40,8 @@ class ProfileGoalTest(unittest.TestCase):
         for key,value in [('queues.lidar_subscription_depth',0),('queues.imu_subscription_depth',True),
                           ('queues.lidar_buffer_capacity',1),('queues.imu_buffer_capacity',4001),
                           ('timing.status_period_s',0.),('timing.warn_age_s',float('nan')),
+                          ('odometry.max_publish_rate_hz',float('nan')),
+                          ('odometry.max_publish_rate_hz',-1.),
                           ('timing.status_topic','/different_recorder_topic')]:
             changed=copy.deepcopy(profile);changed['nodes']['laserMapping'][key]=value
             with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as file:

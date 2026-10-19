@@ -6,7 +6,7 @@ from sensor_msgs.msg import Imu
 from sensor_msgs.msg import PointCloud2, PointField
 from geometry_msgs.msg import TransformStamped, Vector3
 import sensor_msgs_py.point_cloud2 as pc2
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy
 import numpy as np
 import yaml
 import json
@@ -70,7 +70,10 @@ class Repuber(Node):
         super().__init__('sensor_transformer')
         def param(name, default):
             return self.declare_parameter(name, default).value
-        self.imu_sub = self.create_subscription(Imu, param('raw_imu_topic', '/utlidar/imu'), self.imu_callback, qos_profile_sensor_data)
+        imu_depth=param('imu_subscription_depth',64)
+        if type(imu_depth) is not int or imu_depth<1:raise ValueError('imu_subscription_depth must be positive integer')
+        self.imu_sub = self.create_subscription(Imu, param('raw_imu_topic', '/utlidar/imu'), self.imu_callback,
+            QoSProfile(depth=imu_depth,reliability=ReliabilityPolicy.BEST_EFFORT))
         self.cloud_sub = self.create_subscription(PointCloud2, param('raw_cloud_topic', '/utlidar/cloud'), self.cloud_callback, qos_profile_sensor_data)
         
         self.imu_raw_pub = self.create_publisher(Imu, param('raw_imu_output_topic', '/utlidar/transformed_raw_imu'), 50)

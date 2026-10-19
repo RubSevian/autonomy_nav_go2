@@ -1,6 +1,8 @@
 import json
 import math
+import os
 from pathlib import Path
+import time
 
 def default_recording_profile():
     # Source and installed scripts share the workspace ancestor. Read the same
@@ -28,7 +30,79 @@ def recording_config(path):
     if not config['output_prefix'] or Path(config['output_prefix']).name!=config['output_prefix']:
         raise ValueError('Output prefix must be one filename component')
     if not isinstance(config['point_lio_timing_topic'],str) or not config['point_lio_timing_topic'].startswith('/'):raise ValueError('point_lio_timing_topic')
+    period=config.get('resource_period_s')
+    if type(period) not in (int,float) or not math.isfinite(period) or not 1 <= period <= 10:
+        raise ValueError('resource_period_s must be 1..10 seconds')
     return config
+
+
+class LaunchResourceSampler:
+    """Read-only /proc accounting for the recorder's own ROS launch tree."""
+    def __init__(self, root_pid=None, proc=Path('/proc')):
+        self.root_pid=os.getppid() if root_pid is None else root_pid
+        self.proc=Path(proc)
+        self.previous={}
+        self.ticks=os.sysconf('SC_CLK_TCK')
+        self.page_kib=os.sysconf('SC_PAGE_SIZE')/1024
+
+    def sample(self):
+        now=time.monotonic_ns()
+        records={};children={}
+        try:
+            entries=self.proc.iterdir()
+        except OSError:
+            entries=()
+        for base in entries:
+            if not base.name.isdigit():continue
+            try:
+                stat=(base/'stat').read_text()
+                fields=stat[stat.rindex(')')+2:].split()
+                pid=int(base.name);ppid=int(fields[1])
+                records[pid]=(stat,fields)
+                children.setdefault(ppid,[]).append(pid)
+            except (OSError,ValueError,IndexError):
+                continue
+        pending=[self.root_pid];seen=set();processes=[];current={}
+        while pending:
+            pid=pending.pop()
+            if pid in seen:continue
+            seen.add(pid);pending.extend(children.get(pid,()))
+            if pid not in records:continue
+            try:
+                stat,fields=records[pid]
+                name=stat[stat.index('(')+1:stat.rindex(')')]
+                try:
+                    argv=(self.proc/str(pid)/'cmdline').read_bytes().split(b'\0')
+                    args=[part.decode('utf-8','replace') for part in argv if part]
+                    executable=Path(args[0]).name if args else name
+                    label=Path(next((arg for arg in args[1:] if arg.endswith('.py')),args[0])).name if executable.startswith('python') and args else executable
+                except OSError:
+                    label=name
+                key=(pid,int(fields[19])) # start ticks prevent PID reuse errors
+                cpu_ticks=int(fields[11])+int(fields[12])
+                prior=self.previous.get(key)
+                cpu_percent=None if prior is None or now<=prior[0] else max(0.,100*(cpu_ticks-prior[1])*1e9/(self.ticks*(now-prior[0])))
+                current[key]=(now,cpu_ticks)
+                processes.append(dict(pid=pid,ppid=int(fields[1]),name=name,label=label,
+                    cpu_percent=cpu_percent,rss_kib=int(fields[21])*self.page_kib,threads=int(fields[17])))
+            except (ValueError,IndexError):
+                continue
+        self.previous=current
+        memory={}
+        try:
+            for line in (self.proc/'meminfo').read_text().splitlines():
+                key=line.partition(':')[0]
+                if key in ('MemAvailable','SwapFree','SwapTotal'):
+                    memory[key+'_kib']=int(line.split()[1])
+        except (OSError,ValueError,IndexError):pass
+        paging={}
+        try:
+            for line in (self.proc/'vmstat').read_text().splitlines():
+                key,value=line.split()
+                if key in ('pswpin','pswpout','pgmajfault'):paging[key]=int(value)
+        except (OSError,ValueError):pass
+        return dict(mono_ns=now,root_pid=self.root_pid,root_seen=self.root_pid in records,
+                    processes=sorted(processes,key=lambda row:row['cpu_percent'] or 0,reverse=True),memory=memory,paging_counters=paging)
 
 def atomic(path, value):
     path=Path(path);temp=path.with_suffix(path.suffix+'.tmp')
