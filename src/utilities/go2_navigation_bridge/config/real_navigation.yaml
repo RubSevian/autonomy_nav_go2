@@ -39,7 +39,7 @@ bridge:
   sensor_timeout_s: &nav_sensor_timeout_s 0.5  # Максимальный возраст sensor/odom/path/TF/heartbeat/locomotion status, с.
   goal_dwell_s: 0.5  # Непрерывное нахождение внутри local goal tolerance до SUCCEEDED, с.
   tick_period_s: 0.02  # Период envelope readiness/скорости bridge, с; 0.02 = 50 Гц.
-  status_period_s: 0.2  # Период JSON-статуса bridge, с; 0.20 = 5 Гц.
+  status_period_s: 0.05 # Статус NAV 20 Гц: запас до heartbeat TTL250 мс, без изменения watchdog.
   tf_check_period_s: 0.02  # Подбор свежей TF/odom пары каждый tick; её возраст по-прежнему ограничен sensor_timeout_s.
   tf_pair_history_s: 1.0  # Временной горизонт odometry/TF, с; не меньше sensor_timeout_s; НЕ продлевает свежесть.
   tf_pair_max_samples: 2048  # Предел компактных pose-записей НА КАЖДЫЙ поток, включая версии с одинаковым stamp.
