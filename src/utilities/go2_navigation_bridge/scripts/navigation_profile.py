@@ -55,6 +55,8 @@ def load_profile(path):
     if local['max_speed_mps'] > bridge['vx_limit'] or local['max_yaw_rate_rps'] > bridge['wz_limit']:
         raise ValueError('Follower limits exceed bridge limits')
     sensors, nodes = data['sensors'], data['nodes']
+    if sensors.get('imu_transport_mode','ros_message') not in ('ros_message','projected_cdr'):
+        raise ValueError('Unknown IMU transport mode')
     sensor_topics = ('raw_cloud_topic', 'raw_imu_topic', 'cloud_topic', 'raw_imu_output_topic',
                      'legacy_imu_output_topic', 'time_status_topic')
     for key in sensor_topics:

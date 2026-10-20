@@ -16,6 +16,7 @@ from std_msgs.msg import String
 from .time_alignment import AlignmentConfig, SensorTimeAlignment
 from .bounded_time_alignment import BoundedConfig, BoundedTimeAlignment, finite_imu_fields
 from .point_records import PointRecords
+from .imu_cdr import ImuCdr
 
 import os
 import signal
@@ -72,8 +73,11 @@ class Repuber(Node):
             return self.declare_parameter(name, default).value
         imu_depth=param('imu_subscription_depth',64)
         if type(imu_depth) is not int or imu_depth<1:raise ValueError('imu_subscription_depth must be positive integer')
+        self.imu_transport_mode=param('imu_transport_mode','ros_message')
+        if self.imu_transport_mode not in ('ros_message','projected_cdr'):raise ValueError('unknown imu_transport_mode')
+        self.imu_cdr=ImuCdr()
         self.imu_sub = self.create_subscription(Imu, param('raw_imu_topic', '/utlidar/imu'), self.imu_callback,
-            QoSProfile(depth=imu_depth,reliability=ReliabilityPolicy.BEST_EFFORT))
+            QoSProfile(depth=imu_depth,reliability=ReliabilityPolicy.BEST_EFFORT),raw=self.imu_transport_mode=='projected_cdr')
         self.cloud_sub = self.create_subscription(PointCloud2, param('raw_cloud_topic', '/utlidar/cloud'), self.cloud_callback, qos_profile_sensor_data)
         
         self.imu_raw_pub = self.create_publisher(Imu, param('raw_imu_output_topic', '/utlidar/transformed_raw_imu'), 50)
@@ -253,12 +257,16 @@ class Repuber(Node):
         if isinstance(self.time_alignment, BoundedTimeAlignment):
             self.time_alignment.check_health(time.monotonic_ns())
         snapshot = self.time_alignment.status()
+        snapshot['imu_transport']=dict(mode=self.imu_transport_mode,**self.imu_cdr.status())
         snapshot['snapshot_mono_ns'] = time.monotonic_ns()
         self.time_status_pub.publish(String(data=json.dumps(snapshot)))
 
     def map_sensor_stamp(self, stream, stamp, receive_ros_ns, receive_mono_ns, span_ns=0):
-        source_ns = stamp.sec * 1000000000 + stamp.nanosec
-        if stamp.sec < 0 or not 0 <= stamp.nanosec < 1000000000:
+        return self.map_sensor_values(stream,stamp.sec,stamp.nanosec,receive_ros_ns,receive_mono_ns,span_ns)
+
+    def map_sensor_values(self, stream, sec, nanosec, receive_ros_ns, receive_mono_ns, span_ns=0):
+        source_ns = sec * 1000000000 + nanosec
+        if sec < 0 or not 0 <= nanosec < 1000000000:
             source_ns = 0
         mapped = self.time_alignment.map_stamp(stream, source_ns, receive_ros_ns, receive_mono_ns, span_ns)
         if self.time_alignment.state != self._time_state:
@@ -285,24 +293,24 @@ class Repuber(Node):
         return ret_vec
 
 
-    def imu_callback(self, data):    
+    def imu_callback(self, data):
+        sec,nanosec,orientation,angular,acceleration=self.imu_cdr.read(data)
         if isinstance(self.time_alignment, BoundedTimeAlignment):
-            vectors = (data.angular_velocity, data.linear_acceleration, data.orientation)
-            values = tuple(getattr(v, axis) for v in vectors for axis in ('x', 'y', 'z')) + (data.orientation.w,)
+            values = angular + acceleration + orientation
             if not finite_imu_fields(values):
                 self.time_alignment._drop('imu', 'invalid_imu_fields')
                 return
-        mapped_ns = self.map_sensor_stamp('imu', data.header.stamp,
+        mapped_ns = self.map_sensor_values('imu', sec, nanosec,
                                           self.get_clock().now().nanoseconds, time.monotonic_ns())
         if mapped_ns is None:
             return
         transformed_orientation = quaternion_multiply(
-            self._imu_rotation, [data.orientation.x, data.orientation.y, data.orientation.z, data.orientation.w]
+            self._imu_rotation, orientation
         )
         
-        x = data.angular_velocity.x
-        y = -data.angular_velocity.y
-        z = -data.angular_velocity.z
+        x = angular[0]
+        y = -angular[1]
+        z = -angular[2]
         
 
         x2 = self._imu_cos * x - self._imu_sin * z
@@ -319,22 +327,27 @@ class Repuber(Node):
         x2 += x_comp_rate * z2
         y2 += y_comp_rate * z2
         
-        transformed_angular_velocity = Vector3()
-        transformed_angular_velocity.x = x2
-        transformed_angular_velocity.y = y2
-        transformed_angular_velocity.z = z2
         
-        acc_x = data.linear_acceleration.x
-        acc_y = -data.linear_acceleration.y
-        acc_z = -data.linear_acceleration.z
+        acc_x = acceleration[0]
+        acc_y = -acceleration[1]
+        acc_z = -acceleration[2]
         
         acc_x2 = self._imu_cos * acc_x - self._imu_sin * acc_z
         acc_y2 = acc_y
         acc_z2 = self._imu_sin * acc_x + self._imu_cos * acc_z
+        calibrated_acc=(acc_x2-self.acc_bias_x,acc_y2-self.acc_bias_y,acc_z2-self.acc_bias_z)
+        if self.imu_transport_mode=='projected_cdr' and self.imu_cdr.template is not None:
+            self.imu_raw_pub.publish(self.imu_cdr.encode(mapped_ns,transformed_orientation,(x2,y2,z2),calibrated_acc))
+            self.imu_pub.publish(self.imu_cdr.encode(mapped_ns,(0.,0.,0.,1.),(x2,y2,z2),(0.,0.,0.)))
+            return
+        transformed_angular_velocity = Vector3()
+        transformed_angular_velocity.x = x2
+        transformed_angular_velocity.y = y2
+        transformed_angular_velocity.z = z2
         transformed_linear_acceleration = Vector3()
-        transformed_linear_acceleration.x = acc_x2 - self.acc_bias_x
-        transformed_linear_acceleration.y = acc_y2 - self.acc_bias_y
-        transformed_linear_acceleration.z = acc_z2 - self.acc_bias_z
+        transformed_linear_acceleration.x = calibrated_acc[0]
+        transformed_linear_acceleration.y = calibrated_acc[1]
+        transformed_linear_acceleration.z = calibrated_acc[2]
         
 
         transformed_imu = Imu()

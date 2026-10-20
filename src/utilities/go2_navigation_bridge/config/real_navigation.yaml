@@ -68,6 +68,7 @@ sensors:
   time_min_cloud_samples: 5  # Минимум cloud samples до фиксации общего offset.
   time_min_imu_samples: 100  # Минимум IMU samples до фиксации общего offset.
   imu_subscription_depth: 64  # До ~0.26с IMU при 250Гц: краткая пачка сохраняется, длинная задержка вытесняет устаревшие пакеты.
+  imu_transport_mode: projected_cdr  # Проверенный CDR Imu без повторных ROS-объектов; ros_message возвращает штатный путь. Математика/частота/clock guards те же.
   time_status_period_s: 0.1  # Период небольшой JSON-диагностики clock alignment, с.
   # Internal bounded clock parameters; previous values retained.
   time_envelope_window_s: 1.0
