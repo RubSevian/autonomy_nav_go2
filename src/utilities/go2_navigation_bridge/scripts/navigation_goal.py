@@ -29,7 +29,7 @@ class GoalTracker:
         if stamp_ns <= self.stamp_ns:
             return False
         # Retransmission must not reset a running or completed request.
-        if target == self.target and frame == self.frame:
+        if target == self.target and frame == self.frame and self.state not in ('LOCALIZATION_LOST','GOAL_UNREACHABLE','AUTHORITY_LOST'):
             return False
         self.revision += 1
         self.target, self.frame, self.stamp_ns = target, frame, stamp_ns

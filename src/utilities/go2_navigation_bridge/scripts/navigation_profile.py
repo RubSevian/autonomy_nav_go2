@@ -29,6 +29,11 @@ def load_profile(path):
     if data['calibration']['rotation_speed_rps'] > 1.396:
         raise ValueError('Calibration speed exceeds the original 1.396 rad/s scenario')
     local, robot, bridge = data['local'], data['robot'], data['bridge']
+    if type(bridge.get('localization_recovery_samples',5)) is not int or bridge.get('localization_recovery_samples',5)!=5:
+        raise ValueError('Localization recovery requires five new valid samples')
+    recovery_timeout=bridge.get('path_recovery_timeout_s',10.)
+    if type(recovery_timeout) not in (int,float) or not math.isfinite(recovery_timeout) or recovery_timeout!=10.:
+        raise ValueError('Path recovery timeout must be 10 seconds')
     if bridge['tf_pair_history_s'] < bridge['sensor_timeout_s']:
         raise ValueError('TF pair history must cover sensor_timeout_s')
     if type(bridge['tf_pair_max_samples']) is not int or bridge['tf_pair_max_samples'] < 1:

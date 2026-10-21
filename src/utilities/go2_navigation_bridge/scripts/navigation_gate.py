@@ -1,10 +1,11 @@
 """Velocity request gate; does not implement locomotion modes or robot commands."""
 import math
+from navigation_recovery import LocalizationRecovery
 
 ZERO = (0.0, 0.0, 0.0)
 
 class NavigationGate:
-    def __init__(self, mode='stack', command_timeout=.25, sensor_timeout=.5, limits=(.2, .1, .1), clock_required=False):
+    def __init__(self, mode='stack', command_timeout=.25, sensor_timeout=.5, limits=(.2, .1, .1), clock_required=False, recovery_samples=None):
         if mode not in ('stack', 'command_test'):
             raise ValueError('mode must be stack or command_test')
         if not all(math.isfinite(x) and x > 0 for x in (command_timeout, sensor_timeout)):
@@ -31,6 +32,8 @@ class NavigationGate:
         self.clock_received = None
         self.clock_failed = False
         self.clock_seen_locked = False
+        self.recovery=LocalizationRecovery(recovery_samples) if recovery_samples is not None else None
+        self.localization_was_ready=False;self.goal_invalidated=False
 
     @staticmethod
     def fresh(now, stamp, ttl):
@@ -61,11 +64,21 @@ class NavigationGate:
         return not self.clock_failed and self.clock_valid and self.fresh(now, self.clock_received, self.sensor_timeout)
 
     def localization_ready(self, now):
-        if not self.clock_ready(now):
-            return False
-        return self.mode == 'command_test' or all(
+        healthy=self.clock_ready(now) and (self.mode == 'command_test' or all(
             self.fresh(now, self.health.get(name), self.sensor_timeout)
-            for name in ('lidar', 'imu', 'odom', 'tf'))
+            for name in ('lidar', 'imu', 'odom', 'tf')))
+        if not healthy:
+            if self.recovery:self.recovery.invalidate()
+            if self.localization_was_ready and self.goal_received:
+                self.goal_invalidated=True;self.goal_received=False;self.health['path']=None;self.clear_request()
+            return False
+        ready=healthy and (self.recovery is None or self.recovery.ready)
+        if ready:self.localization_was_ready=True
+        return ready
+
+    def observe_pair(self, stamp_ns, valid):
+        if self.recovery:return self.recovery.observe(stamp_ns,valid)
+        return valid
 
     def goal(self):
         self.goal_received = True
@@ -85,6 +98,12 @@ class NavigationGate:
     def clear_request(self):
         self.request = ZERO
         self.request_received = None
+
+    def invalidate_goal(self):
+        self.goal_received=False
+        self.goal_invalidated=True
+        self.health['path']=None
+        self.clear_request()
 
     def cancel(self):
         self.cancelled = True

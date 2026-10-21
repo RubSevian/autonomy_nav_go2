@@ -33,7 +33,11 @@ class MissionHealth:
                 return
             self.session, self.stamp, self.nav = session, stamp, nav_session
             self.ready = d.get('ready') is True and d.get('physical') is True
-            if d.get('physical') is True and d.get('base_locked') is True:self.base_locked=True
+            phase=d.get('phase')
+            # A recoverable WAIT_GOAL status must never establish the arm lock.
+            # Existing locks remain latched, including while stale input arrives.
+            if d.get('physical') is True and d.get('base_locked') is True and phase not in ('IDLE','WAIT_GOAL','NAVIGATING','WAIT_PATH_RECOVERY'):
+                self.base_locked=True
         except (ValueError, TypeError, KeyError):
             self.ready = False
 
