@@ -71,7 +71,8 @@ class NavigationBridge(Node):
             raise ValueError('far_route requires stack without local_route')
         self.gate = NavigationGate(mode, param('command_timeout_s', .25), param('sensor_timeout_s', .5),
                                    tuple(param(key, default) for key,default in zip(('vx_limit','vy_limit','wz_limit'),(.2,.1,.1))),
-                                   recovery_samples=param('localization_recovery_samples',5) if mode=='stack' else None)
+                                   recovery_samples=param('localization_recovery_samples',5) if mode=='stack' else None,
+                                   tf_timeout=param('tf_timeout_s',.5))
         self.path_recovery=PathRecovery(param('path_recovery_timeout_s',10.))
         self.path_recovery_state='READY'
         self.gate.clock_required = param('require_clock_alignment', False)
@@ -97,7 +98,7 @@ class NavigationBridge(Node):
         self.far_cancel_retry_at = 0.
         self.far_cancel_client = self.create_client(Trigger, '/far_planner/cancel_goal') if self.far_route else None
         self.pairing = LocalizationPairing(PairingConfig(
-            max_age_s=self.gate.sensor_timeout,
+            max_age_s=self.gate.tf_timeout,
             history_s=param('tf_pair_history_s', 1.),
             max_samples=param('tf_pair_max_samples', 2048),
             position_tolerance_m=param('tf_pair_position_tolerance_m', .001),
@@ -341,7 +342,7 @@ class NavigationBridge(Node):
             # fallback and ticks between TF checks. Reuse cannot renew freshness.
             tf_age = ((self.get_clock().now().nanoseconds - pair.odom.stamp_ns) / 1e9
                       if pair else float('inf'))
-            valid = pair is not None and 0 <= tf_age <= self.gate.sensor_timeout
+            valid = pair is not None and 0 <= tf_age <= self.gate.tf_timeout
             self.tf_error = "" if valid else (self.pairing.reason or 'pair_expired')
             self.gate.observe('tf', valid, time.monotonic(), tf_age if valid else 0.)
             pair_healthy=(valid and self.gate.clock_ready(now) and all(
@@ -361,7 +362,7 @@ class NavigationBridge(Node):
         selected = self.pairing.selected
         if self.gate.mode == 'stack' and selected is not None:
             age = (self.get_clock().now().nanoseconds-selected.odom.stamp_ns)/1e9
-            if not 0 <= age <= self.gate.sensor_timeout:
+            if not 0 <= age <= self.gate.tf_timeout:
                 self.tf_error = 'pair_expired' if age > 0 else 'pair_in_future'
                 self.goal_tf_valid = False
                 self.goals.inside_since = None

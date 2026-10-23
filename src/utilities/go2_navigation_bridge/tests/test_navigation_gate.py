@@ -13,6 +13,18 @@ class GateTest(unittest.TestCase):
         for key in ('lidar','imu','odom','tf','path','stop'):g.observe(key,True,10.)
         g.planner_active(True,10.);g.goal()
         return g
+    def test_tf_can_be_one_second_without_relaxing_other_sensors(self):
+        g=NavigationGate('stack',tf_timeout=1.)
+        for key in ('lidar','imu','odom'):g.observe(key,True,10.9)
+        g.observe('tf',True,10.)
+        self.assertTrue(g.localization_ready(10.999))
+        self.assertFalse(g.localization_ready(11.001))
+        for key in ('lidar','imu','odom'):
+            g=NavigationGate('stack',tf_timeout=1.)
+            for name in ('lidar','imu','odom','tf'):g.observe(name,True,10.9)
+            g.observe(key,True,10.)
+            self.assertFalse(g.localization_ready(10.9))
+
     def test_directions_and_clamp(self):
         for axis in range(3):
             for sign in (-1,1):

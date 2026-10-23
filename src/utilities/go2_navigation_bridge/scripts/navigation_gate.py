@@ -5,7 +5,7 @@ from navigation_recovery import LocalizationRecovery
 ZERO = (0.0, 0.0, 0.0)
 
 class NavigationGate:
-    def __init__(self, mode='stack', command_timeout=.25, sensor_timeout=.5, limits=(.2, .1, .1), clock_required=False, recovery_samples=None):
+    def __init__(self, mode='stack', command_timeout=.25, sensor_timeout=.5, limits=(.2, .1, .1), clock_required=False, recovery_samples=None, tf_timeout=None):
         if mode not in ('stack', 'command_test'):
             raise ValueError('mode must be stack or command_test')
         if not all(math.isfinite(x) and x > 0 for x in (command_timeout, sensor_timeout)):
@@ -16,6 +16,9 @@ class NavigationGate:
         self.mode = mode
         self.command_timeout = command_timeout
         self.sensor_timeout = sensor_timeout
+        self.tf_timeout = sensor_timeout if tf_timeout is None else tf_timeout
+        if not math.isfinite(self.tf_timeout) or not 0 < self.tf_timeout <= 1.0:
+            raise ValueError("invalid TF timeout")
         self.health = {}
         self.cancelled = False
         self.request = ZERO
@@ -65,7 +68,7 @@ class NavigationGate:
 
     def localization_ready(self, now):
         healthy=self.clock_ready(now) and (self.mode == 'command_test' or all(
-            self.fresh(now, self.health.get(name), self.sensor_timeout)
+            self.fresh(now, self.health.get(name), self.tf_timeout if name=='tf' else self.sensor_timeout)
             for name in ('lidar', 'imu', 'odom', 'tf')))
         if not healthy:
             if self.recovery:self.recovery.invalidate()

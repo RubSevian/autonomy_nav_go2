@@ -70,7 +70,7 @@ class ProfileGoalTest(unittest.TestCase):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
         edits=[('time_warmup_s',0.),('time_margin_s',float('nan')),('time_status_period_s',0.),
                ('time_min_cloud_samples',1.5),('time_min_imu_samples',True),
-               ('time_max_age_s',.6),('time_max_scan_duration_s',.5),
+               ('time_max_age_s',profile['bridge']['sensor_timeout_s']+.1),('time_max_scan_duration_s',.5),
                ('time_status_topic','/utlidar/cloud')]
         for key,value in edits:
             changed=copy.deepcopy(profile);changed['sensors'][key]=value
