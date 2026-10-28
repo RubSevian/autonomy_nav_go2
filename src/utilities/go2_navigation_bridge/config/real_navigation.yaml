@@ -266,7 +266,7 @@ nodes:
     mapping.imu_time_inte: 0.01  # Номинальный период IMU, с; 0.01 = 100 Гц, проверить фактическую частоту.
     mapping.lidar_meas_cov: 0.01  # Ковариация LiDAR measurement.
     mapping.acc_cov_input: 0.1  # Шум accel input-модели.
-    mapping.vel_cov: 20.0  # Ковариация скорости фильтра.
+    mapping.vel_cov: 20.0  # Параметр шума процесса; не текущая погрешность/ковариация оценки скорости.
     mapping.gyr_cov_input: 0.01  # Шум gyro input-модели.
     mapping.gyr_cov_output: 1000.0  # Шум gyro output-модели.
     mapping.acc_cov_output: 500.0  # Шум accel output-модели.

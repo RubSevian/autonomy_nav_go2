@@ -10,6 +10,9 @@ class MissionHealth:
         self.stamp, self.ready, self.nav = 0, False, ''
         self.owner_since = 0
         self.base_locked = False  # latched for this NAV process; stale input cannot unlock
+        self.return_request_ns = 0
+        self.return_target = None
+        self.lock_owner = None
 
     def graph(self, gids, now_ns):
         gid = bytes(gids[0]) if len(gids) == 1 else None
@@ -34,9 +37,28 @@ class MissionHealth:
             self.session, self.stamp, self.nav = session, stamp, nav_session
             self.ready = d.get('ready') is True and d.get('physical') is True
             phase=d.get('phase')
+            # One explicit post-HOME return lease from the SAME mission owner.
+            # Ordinary base_locked=false, stale health and a new publisher cannot unlock.
+            request = d.get('return_request_ns', 0)
+            home = d.get('home_completed_ns')
+            target = d.get('return_target')
+            if (self.base_locked and not self.return_request_ns and self.ready
+                    and self.lock_owner == (self.gid, self.session)
+                    and phase == 'RETURN_NAV_PREPARE' and d.get('arm_home_ready') is True
+                    and type(request) is int and type(home) is int and 0 < home < request <= stamp
+                    and 0 <= (now_ns-request)/1e9 <= 5.
+                    and isinstance(target, list) and len(target) == 3
+                    and all(type(v) in (float, int) and math.isfinite(v) for v in target)):
+                self.return_request_ns, self.return_target = request, tuple(target)
+                self.base_locked = False
+            if self.return_request_ns and (request != self.return_request_ns or phase not in
+                    ('RETURN_NAV_PREPARE','RETURN_NAVIGATING','RETURN_NAV_SETTLE')):
+                self.base_locked = True
             # A recoverable WAIT_GOAL status must never establish the arm lock.
             # Existing locks remain latched, including while stale input arrives.
             if d.get('physical') is True and d.get('base_locked') is True and phase not in ('IDLE','WAIT_GOAL','NAVIGATING','WAIT_PATH_RECOVERY'):
+                if self.lock_owner is None:
+                    self.lock_owner = (self.gid, self.session)
                 self.base_locked=True
         except (ValueError, TypeError, KeyError):
             self.ready = False

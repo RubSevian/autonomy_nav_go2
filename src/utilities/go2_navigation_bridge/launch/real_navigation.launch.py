@@ -82,7 +82,8 @@ def _stack(context):
     if stage == 'far' and profile['recording']['enabled']:
         recording = profile['recording']
         actions.append(Node(package='go2_navigation_bridge', executable='nav_drift.py', name='manual_drift_recorder',
-                            arguments=['--config', get('profile_path')], output='screen',
+                            arguments=['--config', get('profile_path'), '--until-shutdown', '--sensor-offset-x', str(offsets[0]),
+                                       '--sensor-offset-y', str(offsets[1])], output='screen',
                             sigterm_timeout=str(recording['shutdown_timeout_s']), sigkill_timeout=str(recording['shutdown_timeout_s'])))
     return actions
 

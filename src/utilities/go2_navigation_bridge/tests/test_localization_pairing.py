@@ -27,7 +27,9 @@ class PairingTest(unittest.TestCase):
             p=LocalizationPairing(PairingConfig(max_age_s=cfg['sensor_timeout_s']))
             last=0;expired=0
             for now in range(10_000_000_000,12_000_000_000,20_000_000):
-                pose=sample(now-380_000_000)
+                # Exercise the final 120ms of the configured lease. The profile
+                # moved from .5s to 1s; a fixed 380ms age no longer tests expiry.
+                pose=sample(now-int((cfg['sensor_timeout_s']-.12)*1e9))
                 p.observe_odom(pose);p.observe_tf(pose)
                 if now-last>=int(period*1e9):p.select(now,vehicle);last=now
                 if p.selected is None or now-p.selected.odom.stamp_ns>int(cfg['sensor_timeout_s']*1e9):expired+=1

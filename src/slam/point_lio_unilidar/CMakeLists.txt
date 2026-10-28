@@ -121,6 +121,10 @@ install(
 
 if(BUILD_TESTING)
   enable_testing()
+  add_executable(velocity_observation_test tests/velocity_observation_test.cpp)
+  target_include_directories(velocity_observation_test PRIVATE src)
+  target_compile_options(velocity_observation_test PRIVATE -UNDEBUG)
+  add_test(NAME velocity_observation_test COMMAND velocity_observation_test)
   add_executable(odom_publication_gate_test tests/odom_publication_gate_test.cpp)
   target_include_directories(odom_publication_gate_test PRIVATE src)
   target_compile_options(odom_publication_gate_test PRIVATE -UNDEBUG)

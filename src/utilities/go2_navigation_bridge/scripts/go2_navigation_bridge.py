@@ -146,10 +146,20 @@ class NavigationBridge(Node):
 
     def mission_observation(self, msg, info):
         now=time.monotonic_ns()
+        previous_return = self.mission_health.return_request_ns
         self.mission_health.graph([x.endpoint_gid for x in self.get_publishers_info_by_topic('/go2/mission/health')],now)
         # Jazzy's Python MessageInfo has no publisher GID; use unique endpoint,
         # post-discovery monotonic stamp and immutable session as the lease.
         self.mission_health.observe(msg.data, self.mission_health.gid or b'', now, self.session)
+        if self.mission_health.return_request_ns != previous_return:
+            # Revoke all outbound path/command evidence BEFORE acknowledging the return lease.
+            self.gate.goal_received = False
+            self.gate.clear_request()
+            self.gate.health['path'] = None
+            self.path_recovery.reset()
+            self.path_recovery_state = 'READY'
+            self.goal_after_ns = self.get_clock().now().nanoseconds
+            self.command_after_ns = self.goal_after_ns
 
     def header_age(self, msg):
         stamp = msg.header.stamp
@@ -208,6 +218,14 @@ class NavigationBridge(Node):
         if self.mission_health.base_locked:
             self.get_logger().warn('Mission base lock latched; new goal rejected for this session')
             return
+        if self.mission_health.return_request_ns:
+            target = (msg.point.x, msg.point.y, msg.point.z)
+            if (not self.mission_health.valid(time.monotonic_ns(), self.session)
+                    or self.mission_health.return_target is None
+                    or any(not math.isfinite(v) or abs(v-t)>1.e-6 for v,t in zip(target,self.mission_health.return_target))):
+                self.gate.cancel()
+                self.get_logger().warn('Return lease rejected an unrelated or unverified goal')
+                return
         stamp = msg.header.stamp.sec * 1000000000 + msg.header.stamp.nanosec
         valid = (not self.gate.cancelled and self.gate.localization_ready(time.monotonic()) and stamp > self.goal_after_ns and
                  self.header_valid(msg) and msg.header.frame_id in ('map', 'camera_init') and
@@ -417,6 +435,10 @@ class NavigationBridge(Node):
         if self.path_recovery_state=='WAITING_FOR_PATH':value,enabled=(0.,0.,0.),False
         if self.mission_health.base_locked:
             value, enabled = (0.,0.,0.), False
+        if self.mission_health.return_request_ns and not self.mission_health.valid(time.monotonic_ns(), self.session):
+            self.gate.cancel()
+            self.mission_health.base_locked = True
+            value, enabled = (0.,0.,0.), False
         age = (now - self.gate.request_received + self.gate.request_header_age) if value != (0.,0.,0.) else 0.
         ready = String(data=json.dumps(dict(observed_ns=time.monotonic_ns(), session_id=self.session, navigation_ready=self.gate.localization_ready(now), perception_ready=self.mission_health.valid(time.monotonic_ns(), self.session), command_enabled=enabled, command=list(value), command_age_s=age)))
         self.ready_pub.publish(ready)
@@ -429,7 +451,7 @@ class NavigationBridge(Node):
         if now - self.last_status_publish < self.status_period:
             return
         self.last_status_publish = now
-        self.status_pub.publish(String(data=json.dumps(dict(observed_ns=time.monotonic_ns(), goal=self.goals.snapshot(now), session_id=self.session, input_mode=self.gate.mode, navigation_ready=self.gate.localization_ready(now), localization_recovery_good=self.gate.recovery.good if self.gate.recovery else None, path_recovery=self.path_recovery_state, path_recovery_since=self.path_recovery.since, command_enabled=enabled, cancel_latched=self.gate.cancelled, far_cancel_pending=self.far_cancel_pending or self.far_cancel_future is not None, new_goal_required=self.gate.mode=="stack" and not self.gate.goal_received, block_reason=self.gate.block_reason, tf_error=self.tf_error, tf_pair=self.pairing.snapshot(self.get_clock().now().nanoseconds), health_ages={name: None if stamp is None else now-stamp for name,stamp in self.gate.health.items()}, odom_frame=self.last_odom_frame, command=list(value)))))
+        self.status_pub.publish(String(data=json.dumps(dict(observed_ns=time.monotonic_ns(), goal=self.goals.snapshot(now), session_id=self.session, input_mode=self.gate.mode, navigation_ready=self.gate.localization_ready(now), localization_recovery_good=self.gate.recovery.good if self.gate.recovery else None, path_recovery=self.path_recovery_state, path_recovery_since=self.path_recovery.since, command_enabled=enabled, cancel_latched=self.gate.cancelled, far_cancel_pending=self.far_cancel_pending or self.far_cancel_future is not None, new_goal_required=self.gate.mode=="stack" and not self.gate.goal_received, block_reason=self.gate.block_reason, tf_error=self.tf_error, tf_pair=self.pairing.snapshot(self.get_clock().now().nanoseconds), health_ages={name: None if stamp is None else now-stamp for name,stamp in self.gate.health.items()}, odom_frame=self.last_odom_frame, command=list(value), base_locked=self.mission_health.base_locked, return_request_ns=self.mission_health.return_request_ns))))
 
 def main():
     # Stop spin in the Python thread before destroying DDS handles. The default

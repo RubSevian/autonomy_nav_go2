@@ -26,9 +26,11 @@
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
+#include <geometry_msgs/msg/twist_with_covariance_stamped.hpp>
 // #include <livox_ros_driver/CustomMsg.h>
 #include <nav_msgs/msg/odometry.hpp>
 #include "odom_publication_gate.h"
+#include "velocity_observation.hpp"
 #include <nav_msgs/msg/path.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 
@@ -92,6 +94,8 @@ int64_t last_odom_header_ns = 0;
 int64_t last_odom_publish_ns = 0;
 size_t odom_published = 0, odom_published_stale = 0, odom_publication_skipped = 0;
 double max_odom_publication_age_s = 0.0;
+rclcpp::Publisher<geometry_msgs::msg::TwistWithCovarianceStamped>::SharedPtr velocity_pub;
+size_t velocity_published = 0, velocity_invalid = 0;
 
 PointCloudXYZI::Ptr feats_undistort(new PointCloudXYZI());
 PointCloudXYZI::Ptr feats_down_body_space(new PointCloudXYZI());
@@ -719,6 +723,35 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
     }
     set_posestamp(odomAftMapped.pose.pose);
 
+    // Separate measured-velocity channel: legacy odometry consumers include
+    // pathFollower's angular-rate slowdown logic. Diagnostics must not change it.
+    // Only state_output contains an estimated angular rate with joint covariance.
+    if (!use_imu_as_input && velocity_pub) {
+        point_lio_diagnostics::BodyVelocity observation;
+        const auto& state = kf_output.get_x();
+        if (point_lio_diagnostics::outputBodyVelocity(
+                state.rot.normalized().toRotationMatrix(), state.vel, state.omg,
+                kf_output.get_P(), observation)) {
+            geometry_msgs::msg::TwistWithCovarianceStamped velocity;
+            velocity.header.stamp = odomAftMapped.header.stamp;
+            velocity.header.frame_id = "aft_mapped";
+            auto& twist = velocity.twist.twist;
+            twist.linear.x = observation.value(0);
+            twist.linear.y = observation.value(1);
+            twist.linear.z = observation.value(2);
+            twist.angular.x = observation.value(3);
+            twist.angular.y = observation.value(4);
+            twist.angular.z = observation.value(5);
+            for (int row = 0; row < 6; ++row)
+                for (int col = 0; col < 6; ++col)
+                    velocity.twist.covariance[row * 6 + col] = observation.covariance(row, col);
+            velocity_pub->publish(velocity);
+            ++velocity_published;
+        } else {
+            ++velocity_invalid;
+        }
+    }
+
     last_odom_header_ns = rclcpp::Time(odomAftMapped.header.stamp).nanoseconds();
     last_odom_publish_ns = mapping_clock->now().nanoseconds();
     const double publication_age = (last_odom_publish_ns - last_odom_header_ns) / 1.e9;
@@ -862,6 +895,8 @@ int RunMapping()
     auto pubLaserCloudMap = node->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 1000);
 
     auto pubOdomAftMapped = node->create_publisher<nav_msgs::msg::Odometry>("/aft_mapped_to_init", 1000);
+    velocity_pub = node->create_publisher<geometry_msgs::msg::TwistWithCovarianceStamped>(
+        "/point_lio/velocity", rclcpp::SensorDataQoS());
 
     auto pubPath = node->create_publisher<nav_msgs::msg::Path>("/path", 1000);
 
@@ -879,6 +914,9 @@ int RunMapping()
              << ",\"dropped_lidar_scans\":" << dropped_lidar_scans
              << ",\"dropped_imu_samples\":" << dropped_imu_samples
              << ",\"odom_published\":" << odom_published
+             << ",\"velocity_supported\":" << (use_imu_as_input ? "false" : "true")
+             << ",\"velocity_published\":" << velocity_published
+             << ",\"velocity_invalid\":" << velocity_invalid
              << ",\"odom_publication_skipped\":" << odom_publication_skipped
              << ",\"odom_max_publish_rate_hz\":" << odometry_max_publish_rate_hz
              << ",\"odom_published_stale\":" << odom_published_stale

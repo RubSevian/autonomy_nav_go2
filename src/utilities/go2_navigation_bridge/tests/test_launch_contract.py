@@ -44,7 +44,9 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
             assert by_name['far_planner']['parameters'][0]['g_planner/converge_distance']==.25
             recorder=by_name['manual_drift_recorder']
             assert recorder['executable']=='nav_drift.py'
-            assert recorder['arguments']==['--config',str(p.parents[1]/'config/real_navigation.yaml')]
+            assert recorder['arguments']==['--config',str(p.parents[1]/'config/real_navigation.yaml'),
+                '--until-shutdown','--sensor-offset-x',str(by_name['localPlanner']['parameters'][0]['sensorOffsetX']),
+                '--sensor-offset-y',str(by_name['localPlanner']['parameters'][0]['sensorOffsetY'])]
         else:
             assert 'manual_drift_recorder' not in by_name
     c=context('far');c.launch_configurations['observe_only']='true'
