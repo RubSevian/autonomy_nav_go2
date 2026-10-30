@@ -13,7 +13,7 @@ def load_profile(path):
         'calibration': ('rotation_speed_rps',),
         'robot': ('length_m', 'width_m', 'sensor_offset_x_m', 'sensor_offset_y_m'),
         'local': ('search_radius_m', 'path_scale', 'max_speed_mps', 'max_yaw_rate_rps',
-                  'max_accel_mps2', 'goal_tolerance_m', 'stop_distance_m', 'slow_distance_m'),
+                  'max_accel_mps2', 'goal_tolerance_m', 'stop_distance_m', 'slow_distance_m', 'near_goal_distance_m'),
         'bridge': ('vx_limit', 'vy_limit', 'wz_limit', 'command_timeout_s', 'sensor_timeout_s',
                    'goal_dwell_s', 'tick_period_s', 'status_period_s', 'tf_check_period_s',
                    'graph_check_period_s', 'far_status_timeout_s', 'cancel_timeout_s', 'cancel_retry_s',
@@ -56,6 +56,8 @@ def load_profile(path):
         raise ValueError('Collision radius smaller than robot circumscribed radius')
     if not local['stop_distance_m'] < local['goal_tolerance_m'] <= local['slow_distance_m']:
         raise ValueError('Require stop_distance < goal_tolerance <= slow_distance')
+    if local['near_goal_distance_m'] <= local['goal_tolerance_m']:
+        raise ValueError('Require near_goal_distance > goal_tolerance: approach must start before arrival')
     # Existing R3 NAV contract remains the authority; profile must not promise
     # commands the leg controller will silently clamp to different values.
     if any(bridge[key] > limit for key, limit in zip(('vx_limit', 'vy_limit', 'wz_limit'), (.2, .1, .1))):
@@ -155,12 +157,12 @@ def _derived_parameters(data):
         'localPlanner': dict(offsets, **speed, vehicleLength=float(robot['length_m']), vehicleWidth=float(robot['width_m']),
                              narrowFootprintLength=float(robot['length_m']), narrowFootprintWidth=float(robot['width_m']),
                              pathScale=float(local['path_scale']), minPathScale=float(local['path_scale']),
-                             searchRadius=float(local['search_radius_m']), goalCloseDis=float(local['goal_tolerance_m']),
+                             searchRadius=float(local['search_radius_m']), goalCloseDis=float(local['near_goal_distance_m']),
                              enableNarrowPassageMode=local['narrow_passage'], enableOrientationAwareCheck=local['orientation_aware'],
                              enableNarrowRecoveredSelection=local['narrow_recovered_selection']),
         'pathFollower': dict(offsets, **speed, maxYawRate=math.degrees(local['max_yaw_rate_rps']),
                              maxAccel=float(local['max_accel_mps2']), stopDisThre=float(local['stop_distance_m']),
-                             slowDwnDisThre=float(local['slow_distance_m']), goalCloseDis=float(local['goal_tolerance_m']),
+                             slowDwnDisThre=float(local['slow_distance_m']), goalCloseDis=float(local['near_goal_distance_m']),
                              followerMotionModel=local['follower_motion_model'], enableNarrowPassageMode=local['narrow_recovered_selection']),
         'far_planner': {'sensor_offset_x':offsets['sensorOffsetX'], 'sensor_offset_y':offsets['sensorOffsetY'],
                         'g_planner/converge_distance':float(local['goal_tolerance_m'])},

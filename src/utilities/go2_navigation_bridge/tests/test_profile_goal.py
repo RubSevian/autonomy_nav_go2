@@ -99,9 +99,28 @@ class ProfileGoalTest(unittest.TestCase):
         self.assertAlmostEqual(nodes['pathFollower']['maxYawRate'],5.7295779513)
         self.assertEqual(nodes['localPlanner']['sensorOffsetX'],.31)
         self.assertEqual(nodes['far_planner']['sensor_offset_x'],.31)
-        self.assertEqual(nodes['localPlanner']['goalCloseDis'],.3)
+        self.assertEqual(nodes['localPlanner']['goalCloseDis'],profile['local']['near_goal_distance_m'])
+        self.assertEqual(nodes['pathFollower']['goalCloseDis'],profile['local']['near_goal_distance_m'])
         self.assertEqual(nodes['far_planner']['g_planner/converge_distance'],.3)
         self.assertNotIn('sensorOffsetX',profile['nodes']['localPlanner'])
+
+    def test_approach_radius_is_independent_of_arrival_and_stop(self):
+        profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
+        profile['local']['near_goal_distance_m']=.9
+        nodes=component_parameters(profile)
+        self.assertEqual(nodes['localPlanner']['goalCloseDis'],.9)
+        self.assertEqual(nodes['pathFollower']['goalCloseDis'],.9)
+        self.assertEqual(nodes['pathFollower']['stopDisThre'],.225)
+        self.assertEqual(nodes['far_planner']['g_planner/converge_distance'],.25)
+        goal=GoalTracker(profile['local']['goal_tolerance_m'])
+        goal.accept((0.,0.,0.),'map',100,1.)
+        goal.position(.35,0.,2.,True);goal.position(.35,0.,4.,True)
+        self.assertNotEqual(goal.state,'SUCCEEDED')
+        for value in (0.,.2,.25,float('nan'),True):
+            changed=copy.deepcopy(profile);changed['local']['near_goal_distance_m']=value
+            with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as file:
+                yaml.safe_dump(changed,file);file.flush()
+                with self.assertRaises(ValueError):load_profile(file.name)
 
     def test_local_arrival_dwell_and_departure(self):
         g=GoalTracker();g.accept((1.,0.,0.),'map',100,1.)

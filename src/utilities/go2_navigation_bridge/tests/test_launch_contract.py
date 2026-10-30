@@ -38,7 +38,9 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
         if stage in ('local','far'):
             assert ('/cmd_vel','/navigation/cmd_vel') in by_name['pathFollower']['remappings']
             assert by_name['pathFollower']['parameters'][0]['sendSportCommand'] is False
-            assert by_name['localPlanner']['parameters'][0]['goalCloseDis']==.25
+            assert by_name['localPlanner']['parameters'][0]['goalCloseDis']==.75
+            assert by_name['pathFollower']['parameters'][0]['goalCloseDis']==.75
+            assert by_name['pathFollower']['parameters'][0]['stopDisThre']==.225
         if stage=='far':
             assert ('/terrain_cloud','/terrain_map_ext') in by_name['far_planner']['remappings']
             assert by_name['far_planner']['parameters'][0]['g_planner/converge_distance']==.25
@@ -66,6 +68,7 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
     changed['bridge']['tf_pair_position_tolerance_m']=.002
     changed['bridge']['tf_pair_quaternion_tolerance']=.003
     changed['local']['goal_tolerance_m']=.30
+    changed['local']['near_goal_distance_m']=.85
     changed['sensors']['cloud_topic']='/audit/cloud'
     changed['sensors']['raw_imu_output_topic']='/audit/imu'
     changed['nodes']['laserMapping']['filter_size_surf']=.12
@@ -76,7 +79,7 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
         captured.clear();m._stack(c)
         by_name={node.get('name'):node for node in captured}
         for name in ('localPlanner','pathFollower'):
-            assert by_name[name]['parameters'][0]['goalCloseDis']==.30
+            assert by_name[name]['parameters'][0]['goalCloseDis']==.85
         assert by_name['far_planner']['parameters'][0]['g_planner/converge_distance']==.30
         bridge=next(node for node in captured if node['package']=='go2_navigation_bridge')['parameters'][0]
         assert bridge['goal_tolerance_m']==.30 and bridge['imu_topic']=='/audit/imu'
