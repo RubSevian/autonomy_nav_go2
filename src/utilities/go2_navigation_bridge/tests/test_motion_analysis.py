@@ -9,7 +9,7 @@ import numpy as np
 import yaml
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
-from nav_motion_analyze import analyze, manipulation_windows, interval_metrics, vehicle_velocity
+from nav_motion_analyze import analyze, manipulation_windows, interval_metrics, vehicle_velocity, attempt_windows
 
 
 class MotionAnalysisTests(unittest.TestCase):
@@ -30,6 +30,16 @@ class MotionAnalysisTests(unittest.TestCase):
                    base_motion_window=dict(scan_started_ns=2,home_completed_ns=9))]
         windows=manipulation_windows(rows)
         self.assertEqual(len(windows),1);self.assertEqual(windows[0]['end_ns'],9)
+
+    def test_attempt_history_keeps_first_home_and_unfinished_second_attempt(self):
+        first=dict(iteration=1,scan_started_ns=2,home_completed_ns=5,result='TARGET_NOT_GRASPED')
+        record=dict(session_id='s',full_attempt=2,attempt_scan_started_ns=6,attempt_history=[first])
+        windows=sorted(attempt_windows([record,record]),key=lambda w:w['iteration'])
+        self.assertEqual(len(windows),2);self.assertEqual(windows[0]['end_ns'],5)
+        self.assertIsNone(windows[1]['end_ns'])
+        second=dict(iteration=2,scan_started_ns=6,home_completed_ns=9,result='GRASP_PRESUMED_SUCCESS')
+        windows=sorted(attempt_windows([record,record|dict(attempt_history=[first,second])]),key=lambda w:w['iteration'])
+        self.assertEqual(windows[1]['end_ns'],9);self.assertEqual(windows[0]['outcome'],'TARGET_NOT_GRASPED')
 
     def test_incomplete_home_does_not_become_finished(self):
         windows=manipulation_windows([dict(session_id='s',state='BLOCKED',observed_ns=9,

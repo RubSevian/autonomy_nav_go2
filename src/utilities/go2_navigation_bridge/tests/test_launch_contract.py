@@ -40,7 +40,7 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
             assert by_name['pathFollower']['parameters'][0]['sendSportCommand'] is False
             assert by_name['localPlanner']['parameters'][0]['goalCloseDis']==.75
             assert by_name['pathFollower']['parameters'][0]['goalCloseDis']==.75
-            assert by_name['pathFollower']['parameters'][0]['stopDisThre']==.225
+            assert by_name['pathFollower']['parameters'][0]['stopDisThre']==.20
         if stage=='far':
             assert ('/terrain_cloud','/terrain_map_ext') in by_name['far_planner']['remappings']
             assert by_name['far_planner']['parameters'][0]['g_planner/converge_distance']==.25

@@ -110,7 +110,7 @@ class ProfileGoalTest(unittest.TestCase):
         nodes=component_parameters(profile)
         self.assertEqual(nodes['localPlanner']['goalCloseDis'],.9)
         self.assertEqual(nodes['pathFollower']['goalCloseDis'],.9)
-        self.assertEqual(nodes['pathFollower']['stopDisThre'],.225)
+        self.assertEqual(nodes['pathFollower']['stopDisThre'],.20)
         self.assertEqual(nodes['far_planner']['g_planner/converge_distance'],.25)
         goal=GoalTracker(profile['local']['goal_tolerance_m'])
         goal.accept((0.,0.,0.),'map',100,1.)

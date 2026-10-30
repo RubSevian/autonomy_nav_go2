@@ -73,7 +73,8 @@ def main():
   try:
    data=json.loads(m.data)
    keys=('observed_ns','session_id','navigation_session_id','goal_revision','state','state_entered_ns',
-         'base_motion_window','grasp_assessment','test_mode','return_to_start')
+         'base_motion_window','grasp_assessment','test_mode','return_to_start',
+         'full_attempt','max_full_attempts','attempt_scan_started_ns','attempt_history')
    statusfile.write(json.dumps({'mono_ns':time.monotonic_ns(),'topic':'/go2/mission/status',
                                'data':{k:data[k] for k in keys if k in data}})+'\n')
   except (ValueError,TypeError):pass

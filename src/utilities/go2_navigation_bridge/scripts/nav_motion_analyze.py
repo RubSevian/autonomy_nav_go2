@@ -102,6 +102,24 @@ def summary(values):
                 p95=float(np.percentile(a, 95)), max=float(a.max()))
 
 
+def attempt_windows(records):
+    windows={}
+    for record in records:
+        session=record.get('session_id')
+        entries=list(record.get('attempt_history') or [])
+        if record.get('attempt_scan_started_ns'):
+            entries.insert(0,dict(iteration=record.get('full_attempt',1),scan_started_ns=record['attempt_scan_started_ns']))
+        for entry in entries:
+            start=entry.get('scan_started_ns')
+            if not start:continue
+            key=(session,entry['iteration'])
+            value=windows.setdefault(key,dict(session_id=session,iteration=entry['iteration'],
+                start_ns=start,end_ns=None,outcome=None,boundary_source='mission_attempt'))
+            if entry.get('home_completed_ns'):
+                value.update(end_ns=entry['home_completed_ns'],outcome=entry.get('result'),reason=entry.get('reason'))
+    return list(windows.values())
+
+
 def interval_metrics(samples, start_ns, end_ns, max_gap_s=.5):
     selected = [s for s in samples if start_ns <= s['t'] <= end_ns]
     if len(selected) < 2:
@@ -221,7 +239,8 @@ def analyze(capture, *, journal=None, output=None, plot=False):
             row['fd_speed_xy_mps'] = float(np.linalg.norm((s['p']-samples[k]['p'])[:2])/dt)
         rows.append(row)
     windows = manipulation_windows(missions)
-    for window in windows:
+    attempts = attempt_windows(missions)
+    for window in windows+attempts:
         end = window['end_ns']
         window['metrics'] = (interval_metrics(samples,window['start_ns'],end,max_gap_s=max_age_s) if end else
                              dict(status='HOME_NOT_COMPLETED', samples=0))
@@ -257,7 +276,7 @@ def analyze(capture, *, journal=None, output=None, plot=False):
     if any(b['header']<a['header'] for a,b in zip(samples,samples[1:])): continuity_issues.append('ODOMETRY_TIME_RESET')
     if invalid_rows: continuity_issues.append('INVALID_POSE_ROWS')
     if continuity_issues:
-        for window in windows:
+        for window in windows+attempts:
             window['metrics']['status'] = 'INVALID_INTERVAL'
             window['metrics'].setdefault('issues', []).extend(continuity_issues)
     for metrics in navigation.values():
@@ -270,7 +289,7 @@ def analyze(capture, *, journal=None, output=None, plot=False):
         velocity_invalid_rows=velocity_invalid, velocity_duplicate_stamps=velocity_duplicate,
         velocity_status='EKF_RECORDED' if any(r['speed_xy_mps'] is not None for r in rows) else 'NOT_RECORDED',
         continuity_issues=continuity_issues, source_owner_history_recorded=bool(owners),
-        manipulation_windows=windows, navigation_comparison=navigation,
+        manipulation_windows=windows, manipulation_attempts=attempts, navigation_comparison=navigation,
         return_to_start=next((d.get('return_to_start') for d in reversed(missions) if d.get('return_to_start')),None),
         external_ground_truth=False, absolute_velocity_error='NOT_MEASURED',
         interpretation='Position change includes physical base motion and localization drift. EKF covariance is model uncertainty; command tracking error is not sensor error. Fixed extrinsic uncertainty is not included.')
