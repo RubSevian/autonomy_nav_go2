@@ -1,5 +1,9 @@
 std_msgs/Header header
 
+# Exact vehicle pose used to construct the path, in the odometry world frame.
+# Its stamp is measurement time; header.stamp pairs the published path/constraint.
+geometry_msgs/PoseStamped source_pose
+
 uint64 path_revision
 bool requires_alignment
 float32 lateral_clearance

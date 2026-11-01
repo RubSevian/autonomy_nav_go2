@@ -292,6 +292,8 @@ def analyze(capture, *, journal=None, output=None, plot=False):
         manipulation_windows=windows, manipulation_attempts=attempts, navigation_comparison=navigation,
         return_to_start=next((d.get('return_to_start') for d in reversed(missions) if d.get('return_to_start')),None),
         external_ground_truth=False, absolute_velocity_error='NOT_MEASURED',
+        physical_velocity_validated=False,
+        velocity_interpretation='EKF state observation, not a validated physical velocity. Pose derivatives are noise- and window-dependent. Check integral consistency in a common frame before interpreting speed or command-tracking metrics.',
         interpretation='Position change includes physical base motion and localization drift. EKF covariance is model uncertainty; command tracking error is not sensor error. Fixed extrinsic uncertainty is not included.')
     atomic(output/'base_motion_results.json',result)
     if rows:
@@ -312,10 +314,11 @@ def analyze(capture, *, journal=None, output=None, plot=False):
             displacement=np.linalg.norm(p[selected,:2]-p[selected,:2][0],axis=1)
             axes[1].plot(t[selected],displacement,label='Scan pose to completed HOME')
         axes[1].set(xlabel='Measurement time from recording start, s',ylabel='XY displacement, m');axes[1].legend()
-        for key,label in [('speed_xy_mps','EKF velocity'),('fd_speed_xy_mps','Pose difference, 0.2–0.3 s window')]:
+        for key,label in [('speed_xy_mps','EKF state magnitude (unvalidated)'),('fd_speed_xy_mps','Pose increment, 0.2–0.3 s (noise-sensitive)')]:
             values=[float('nan') if r[key] is None else r[key] for r in rows]
             if any(math.isfinite(v) for v in values):axes[2].plot(t,values,label=label)
-        axes[2].set(xlabel='Measurement time from recording start, s',ylabel='XY speed, m/s');axes[2].legend()
+        axes[2].set(xlabel='Measurement time from recording start, s',ylabel='XY estimate magnitude, m/s',
+                    title='Diagnostic channels; physical velocity accuracy is not established');axes[2].legend()
         for ax in axes:ax.grid(alpha=.25)
         fig.savefig(output/'base_motion.png',dpi=160);plt.close(fig)
     return result

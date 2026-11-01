@@ -102,9 +102,12 @@ try:
     assert commands[-1]==(0.,0.,0.),'blocked local route continued nonzero velocity'
     pump(1.0)
     assert any(v[0]>.05 for v in commands[-20:]),statuses[-1:]
-    pump(.8,cloud=False)
-    assert commands[-1]==(0.,0.,0.) and not statuses[-1]['navigation_ready']
+    pump(profile['bridge']['sensor_timeout_s']+.4,cloud=False)
+    assert commands[-1]==(0.,0.,0.) and not statuses[-1]['navigation_ready'], statuses[-1:]
     pump(.8)
+    assert statuses[-1]['navigation_ready'] and statuses[-1]['new_goal_required'],statuses[-1:]
+    assert commands[-1]==(0.,0.,0.), 'old goal resumed after localization loss'
+    goal();pump(1.)
     assert statuses[-1]['command_enabled'],statuses[-1:]
     service('cancel');pump(.4)
     assert commands[-1]==(0.,0.,0.) and statuses[-1]['cancel_latched']

@@ -140,6 +140,7 @@ bool GraphPlanner::IsValidConnectToGoal(const NavNodePtr& node_ptr, const NavNod
 }
 
 bool GraphPlanner::PathToGoal(const NavNodePtr& goal_ptr,
+                              FARGoalArrival::State arrival,
                               NodePtrStack& global_path,
                               NavNodePtr& _nav_node_ptr,
                               Point3D& _goal_p,
@@ -165,8 +166,7 @@ bool GraphPlanner::PathToGoal(const NavNodePtr& goal_ptr,
     }
 
     _goal_p = goal_ptr->position;
-    if ((odom_node_ptr_->position - _goal_p).norm() < gp_params_.converge_dist ||
-        (odom_node_ptr_->position - origin_goal_pos_).norm() < gp_params_.converge_dist) {
+    if (arrival != FARGoalArrival::State::APPROACHING) {
         global_path = {odom_node_ptr_, goal_ptr};
         const auto validation = FARPathValidation::ValidateRoute(global_path);
         last_path_status_ = validation.status;

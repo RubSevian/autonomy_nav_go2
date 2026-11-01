@@ -700,6 +700,34 @@ void set_posestamp(T &out)
     }
 }
 
+// Optional diagnostic output-model trace. Never changes prediction/publication gates.
+std::atomic<bool> filter_trace_enabled{false};
+rclcpp::Publisher<std_msgs::msg::String>::SharedPtr filter_trace_pub;
+void publish_filter_trace(const char* stage, double target_time, double dt, bool valid=true)
+{
+    if (!filter_trace_enabled || !filter_trace_pub || filter_trace_pub->get_subscription_count()==0) return;
+    static uint64_t sequence=0;
+    const auto& state=kf_output.get_x();
+    std::ostringstream out;
+    out << std::setprecision(17) << "{\"sequence\":" << ++sequence
+        << ",\"stage\":\"" << stage << "\",\"target_time_s\":" << target_time
+        << ",\"dt_s\":" << dt << ",\"valid\":" << (valid ? "true" : "false")
+        << ",\"frame\":\"camera_init\",\"reference\":\"Point-LIO state origin\"";
+    auto vector = [&out](const char* name,const auto& v) {
+        out << ",\"" << name << "\":[";
+        for (int i=0;i<v.size();++i) { if(i) out << ','; if(std::isfinite(v[i])) out << v[i]; else out << "null"; }
+        out << ']';
+    };
+    vector("position",state.pos); vector("velocity",state.vel);
+    vector("angular_velocity",state.omg); vector("acceleration",state.acc);
+    vector("gravity",state.gravity); vector("gyro_bias",state.bg); vector("accel_bias",state.ba);
+    vector("quaternion_xyzw",state.rot.coeffs());
+    const auto covariance=kf_output.get_P().diagonal().eval();
+    vector("covariance_diagonal",covariance);
+    out << '}';
+    std_msgs::msg::String message;message.data=out.str();filter_trace_pub->publish(message);
+}
+
 void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped)
 {
     static OdomPublicationGate publication_gate(odometry_max_publish_rate_hz);
@@ -759,6 +787,8 @@ void publish_odometry(const rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPt
     if (publication_age > timing_warn_age_s || publication_age < 0) ++odom_published_stale;
     max_odom_publication_age_s = std::max(max_odom_publication_age_s, publication_age);
     pubOdomAftMapped->publish(odomAftMapped);
+    if (!use_imu_as_input)
+        publish_filter_trace("odometry_publish", get_time_in_sec(odomAftMapped.header.stamp), 0.);
 
     geometry_msgs::msg::TransformStamped trans_odom_to_base;
     trans_odom_to_base.transform.translation.x = odomAftMapped.pose.pose.position.x;
@@ -803,6 +833,19 @@ int RunMapping()
     }
 
     readParameters(node);
+    filter_trace_enabled=node->declare_parameter<bool>("trace.enabled",false);
+    filter_trace_pub=node->create_publisher<std_msgs::msg::String>("/point_lio/state_trace",rclcpp::SensorDataQoS());
+    auto trace_parameter_callback=node->add_on_set_parameters_callback(
+        [](const std::vector<rclcpp::Parameter>& parameters) {
+            rcl_interfaces::msg::SetParametersResult result;result.successful=true;
+            for (const auto& parameter:parameters) if(parameter.get_name()=="trace.enabled") {
+                if(parameter.get_type()!=rclcpp::ParameterType::PARAMETER_BOOL) {
+                    result.successful=false;result.reason="trace.enabled must be boolean";return result;
+                }
+            }
+            for (const auto& parameter:parameters) if(parameter.get_name()=="trace.enabled") filter_trace_enabled=parameter.as_bool();
+            return result;
+        });
     cout << "lidar_type: " << lidar_type << endl << flush;
 
     path.header.stamp = get_ros_time(lidar_end_time);
@@ -1181,7 +1224,9 @@ int RunMapping()
                         imu_next = *(imu_deque.front());
                         imu_deque.pop_front();
                         double dt = get_time_in_sec(imu_last.header.stamp) - time_predict_last_const;
+                        publish_filter_trace("predict_imu_before",get_time_in_sec(imu_last.header.stamp),dt);
                         kf_output.predict(dt, Q_output, input_in, true, false);
+                        publish_filter_trace("predict_imu_after",get_time_in_sec(imu_last.header.stamp),dt);
                         time_predict_last_const = get_time_in_sec(imu_last.header.stamp);
                         imu_comes = time_current > get_time_in_sec(imu_next.header.stamp);
 
@@ -1197,7 +1242,9 @@ int RunMapping()
 
                                 propag_time += omp_get_wtime() - propag_imu_start;
                                 double solve_imu_start = omp_get_wtime();
+                                publish_filter_trace("imu_correct_before",get_time_in_sec(imu_last.header.stamp),0.);
                                 kf_output.update_iterated_dyn_share_IMU();
+                                publish_filter_trace("imu_correct_after",get_time_in_sec(imu_last.header.stamp),0.);
                                 solve_time += omp_get_wtime() - solve_imu_start;
                             }
                         }
@@ -1215,7 +1262,9 @@ int RunMapping()
                         time_update_last = time_current;
                     }
                 }
+                publish_filter_trace("predict_lidar_before",time_current,dt);
                 kf_output.predict(dt, Q_output, input_in, true, false);
+                publish_filter_trace("predict_lidar_after",time_current,dt);
                 propag_time += omp_get_wtime() - propag_state_start;
                 time_predict_last_const = time_current;
 
@@ -1227,7 +1276,10 @@ int RunMapping()
                     idx += time_seq[k];
                     continue;
                 }
-                if (!kf_output.update_iterated_dyn_share_modified())
+                publish_filter_trace("lidar_correct_before",time_current,0.);
+                const bool lidar_update_valid=kf_output.update_iterated_dyn_share_modified();
+                publish_filter_trace("lidar_correct_after",time_current,0.,lidar_update_valid);
+                if (!lidar_update_valid)
                 {
                     idx = idx + time_seq[k];
                     continue;

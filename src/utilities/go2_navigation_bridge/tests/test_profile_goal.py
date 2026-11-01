@@ -81,6 +81,10 @@ class ProfileGoalTest(unittest.TestCase):
     def test_no_duplicate_derived_values_or_wrong_sensor_contract(self):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
         edits=[('pathFollower','maxSpeed',.5),('pathFollower','sendSportCommand',True),
+               ('pathFollower','speedDeadband',float('nan')),
+               ('pathFollower','speedDeadband',-.01),
+               ('pathFollower','speedDeadband',True),
+               ('pathFollower','speedDeadband',profile['local']['max_speed_mps']),
                ('laserMapping','mapping.imu_en',False),('far_planner','robot_dim',.01),
                ('far_planner','opencv_threads',0),('far_planner','opencv_threads',True),
                ('far_planner','opencv_threads',17),
@@ -98,6 +102,7 @@ class ProfileGoalTest(unittest.TestCase):
         nodes=component_parameters(profile)
         self.assertAlmostEqual(nodes['pathFollower']['maxYawRate'],5.7295779513)
         self.assertEqual(nodes['localPlanner']['sensorOffsetX'],.31)
+        self.assertEqual(nodes['pathFollower']['speedDeadband'],.02)
         self.assertEqual(nodes['far_planner']['sensor_offset_x'],.31)
         self.assertEqual(nodes['localPlanner']['goalCloseDis'],profile['local']['near_goal_distance_m'])
         self.assertEqual(nodes['pathFollower']['goalCloseDis'],profile['local']['near_goal_distance_m'])

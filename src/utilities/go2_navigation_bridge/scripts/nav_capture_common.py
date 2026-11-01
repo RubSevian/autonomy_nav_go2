@@ -16,6 +16,7 @@ def default_recording_profile():
 def recording_config(path):
     import yaml
     config=yaml.safe_load(Path(path).read_text())['recording']
+    config=dict(config,status_period_s=config.get('status_period_s',0.5))
     for key in ('duration_s','max_duration_s','pose_capacity'):
         if type(config[key]) is not int or config[key]<=0:raise ValueError(key)
     if not 10<=config['duration_s']<=config['max_duration_s']<=540 or config['pose_capacity']>300000:
@@ -33,6 +34,9 @@ def recording_config(path):
     period=config.get('resource_period_s')
     if type(period) not in (int,float) or not math.isfinite(period) or not 1 <= period <= 10:
         raise ValueError('resource_period_s must be 1..10 seconds')
+    period=config['status_period_s']
+    if type(period) not in (int,float) or not math.isfinite(period) or period<=0:
+        raise ValueError('status_period_s must be positive')
     return config
 
 

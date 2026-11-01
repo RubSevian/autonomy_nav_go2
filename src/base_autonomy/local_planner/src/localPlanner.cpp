@@ -31,6 +31,7 @@
 #include <sensor_msgs/msg/imu.h>
 
 #include "visibility_graph_msg/msg/local_path_constraint.hpp"
+#include "local_planner/path_reference.hpp"
 #include "local_planner/narrow_passage.hpp"
 
 #include "tf2/transform_datatypes.hpp"
@@ -257,6 +258,7 @@ int diagnosticStraightPathID = -1;
 std::string lastLocalStatusSignature;
 
 double odomTime = 0;
+geometry_msgs::msg::PoseStamped pathSourcePose;
 double joyTime = 0;
 
 float vehicleRoll = 0, vehiclePitch = 0, vehicleYaw = 0;
@@ -410,6 +412,11 @@ void publishLocalStatus(const std::string& state, const std::string& code,
 
 void odometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odom)
 {
+  const auto& p = odom->pose.pose.position;
+  const auto& q = odom->pose.pose.orientation;
+  const double norm = q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
+  if (odom->header.frame_id.empty() || !std::isfinite(p.x) || !std::isfinite(p.y) ||
+      !std::isfinite(p.z) || !std::isfinite(norm) || norm < 1.e-12) return;
   odomTime = rclcpp::Time(odom->header.stamp).seconds();
   double roll, pitch, yaw;
   geometry_msgs::msg::Quaternion geoQuat = odom->pose.pose.orientation;
@@ -418,9 +425,16 @@ void odometryHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odom)
   vehicleRoll = roll;
   vehiclePitch = pitch;
   vehicleYaw = yaw;
-  vehicleX = odom->pose.pose.position.x - cos(yaw) * sensorOffsetX + sin(yaw) * sensorOffsetY;
-  vehicleY = odom->pose.pose.position.y - sin(yaw) * sensorOffsetX - cos(yaw) * sensorOffsetY;
-  vehicleZ = odom->pose.pose.position.z;
+  const auto offset = local_planner::vehicleOffset(q.x,q.y,q.z,q.w,sensorOffsetX,sensorOffsetY);
+  vehicleX = p.x + offset[0];
+  vehicleY = p.y + offset[1];
+  vehicleZ = p.z + offset[2];
+  pathSourcePose.header = odom->header;
+  pathSourcePose.pose = odom->pose.pose;
+  // Preserve exactly the origin used by the planar planner, including its precision.
+  pathSourcePose.pose.position.x = vehicleX;
+  pathSourcePose.pose.position.y = vehicleY;
+  pathSourcePose.pose.position.z = vehicleZ;
   hasOdometry = true;
 }
 
@@ -1862,8 +1876,7 @@ int main(int argc, char** argv)
             }
           }
 
-          path.header.stamp = enableNarrowRecoveredSelection ? nh->now() :
-              rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
+          path.header.stamp = nh->now();
           path.header.frame_id = "vehicle";
           localStatus.planningCycleMs = std::chrono::duration<double, std::milli>(
               std::chrono::steady_clock::now() - planningStart).count();
@@ -1871,6 +1884,7 @@ int main(int argc, char** argv)
           localStatus.publishedPathSize = path.poses.size();
           visibility_graph_msg::msg::LocalPathConstraint constraint;
           constraint.header = path.header;
+          constraint.source_pose = pathSourcePose;
           constraint.path_revision = ++localPathRevision;
           constraint.requires_alignment = selectedRequiresAlignment;
           constraint.lateral_clearance = selectedClearance;
@@ -2007,11 +2021,11 @@ int main(int argc, char** argv)
         path.poses[0].pose.position.y = 0;
         path.poses[0].pose.position.z = 0;
 
-        path.header.stamp = enableNarrowRecoveredSelection ? nh->now() :
-            rclcpp::Time(static_cast<uint64_t>(odomTime * 1e9));
+        path.header.stamp = nh->now();
         path.header.frame_id = "vehicle";
         visibility_graph_msg::msg::LocalPathConstraint constraint;
         constraint.header = path.header;
+        constraint.source_pose = pathSourcePose;
         constraint.path_revision = ++localPathRevision;
         constraint.requires_alignment = false;
         constraint.candidate_group_id = -1;

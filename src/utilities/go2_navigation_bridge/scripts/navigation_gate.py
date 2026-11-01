@@ -22,6 +22,8 @@ class NavigationGate:
         self.health = {}
         self.cancelled = False
         self.request = ZERO
+        self.request_unscaled = ZERO
+        self.request_scale = 1.
         self.request_received = None
         self.request_header_age = 0.
         self.active = False
@@ -100,6 +102,8 @@ class NavigationGate:
 
     def clear_request(self):
         self.request = ZERO
+        self.request_unscaled = ZERO
+        self.request_scale = 1.
         self.request_received = None
 
     def invalidate_goal(self):
@@ -145,7 +149,12 @@ class NavigationGate:
             return False
         if len(value) != 3 or not all(math.isfinite(x) for x in value):
             return False
-        self.request = tuple(max(-limit, min(limit, x)) for x, limit in zip(value, self.limits))
+        # Scale the entire planar twist: independent clipping changes direction,
+        # and scaling translation alone changes curvature when yaw is nonzero.
+        scale = min([1.] + [limit / abs(x) for x, limit in zip(value, self.limits) if x])
+        self.request_unscaled = value
+        self.request_scale = scale
+        self.request = tuple(max(-limit, min(limit, scale * x)) for x, limit in zip(value, self.limits))
         self.request_received = now
         self.request_header_age = header_age
         return True

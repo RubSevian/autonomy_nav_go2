@@ -515,8 +515,13 @@ void FARMaster::PlanningCallBack() {
   bool is_current_free_nav = false;
   bool is_reach_goal = false;
   LogLifecycleTransition("ROUTE_SEARCH_BEGIN", "PLANNING");
+  const auto arrival = has_goal_original_
+      ? FARGoalArrival::Evaluate(robot_pos_.x, robot_pos_.y,
+          goal_original_.x, goal_original_.y, goal_current_.x, goal_current_.y,
+          gp_params_.converge_dist)
+      : FARGoalArrival::State::APPROACHING;
   const bool path_found = graph_planner_.PathToGoal(
-      goal_ptr, candidate_path, candidate_nav, current_free_goal, is_planning_fails,
+      goal_ptr, arrival, candidate_path, candidate_nav, current_free_goal, is_planning_fails,
       is_reach_goal, is_current_free_nav);
   path_size_ = candidate_path.size();
   planning_failed_ = is_planning_fails;
@@ -615,8 +620,8 @@ void FARMaster::PlanningCallBack() {
   auto reach_goal_msg = std_msgs::msg::Bool();
   // FAR may adjust a requested point to reachable terrain. Reaching that
   // adjusted point is a stop, but is not success outside the requested XY tolerance.
-  const bool requested_reached = is_reach_goal && has_goal_original_ &&
-      std::hypot(robot_pos_.x - goal_original_.x, robot_pos_.y - goal_original_.y) <= gp_params_.converge_dist;
+  const bool requested_reached = is_reach_goal &&
+      arrival == FARGoalArrival::State::REQUESTED_REACHED;
   goal_reached_ = requested_reached;
   reach_goal_msg.data = requested_reached;
   reach_goal_pub_->publish(reach_goal_msg);

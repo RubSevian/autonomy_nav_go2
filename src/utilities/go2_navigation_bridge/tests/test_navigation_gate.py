@@ -35,6 +35,17 @@ class GateTest(unittest.TestCase):
         g=self.ready();g.accept((.1,0,0),.2,'vehicle',10.)
         self.assertNotEqual(g.output(10.04),ZERO)
         self.assertEqual(g.output(10.06),ZERO)
+    def test_twist_scaling_preserves_direction_and_curvature(self):
+        for v in ((.141,.141,.08),(-.141,.141,-.08),(.1,-.2,.3),(0.,0.,.4),(.03,.01,.02)):
+            g=self.ready()
+            self.assertTrue(g.accept(v,0,'vehicle',10.))
+            out=g.output(10.)
+            ratios=[a/b for a,b in zip(out,v) if b]
+            self.assertTrue(all(abs(r-ratios[0])<1.e-12 for r in ratios))
+            self.assertTrue(all(abs(a)<=limit for a,limit in zip(out,g.limits)))
+        g=self.ready();g.accept((.141,.141,.08),0,'vehicle',10.)
+        self.assertAlmostEqual(g.output(10.)[0],.1)
+        self.assertAlmostEqual(g.output(10.)[1],.1)
     def test_invalid_revokes_previous(self):
         for value,age,frame in [((float('nan'),0,0),0,'vehicle'),((.1,0,0),-.01,'vehicle'),((.1,0,0),.26,'vehicle'),((.1,0,0),0,'map')]:
             g=self.ready();g.accept((.1,0,0),0,'vehicle',10.)

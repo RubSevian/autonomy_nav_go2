@@ -143,6 +143,7 @@ nodes:
     goalY: 0.0  # Начальная Y цели до way_point, м.
   # Слежение за путём; speed/yaw/accel/goal/offsets вычисляются из общих полей.
   pathFollower:
+    speedDeadband: 0.02  # Порог нулевой линейной команды, м/с; независим от dt/ускорения.
     pubSkipNum: 1  # Пропуск циклов публикации follower; 1 = каждый второй цикл 100 Гц.
     twoWayDrive: false  # Разрешить переключение движения вперёд/назад.
     lookAheadDis: 0.5  # Дистанция lookahead follower, м.
@@ -352,6 +353,7 @@ nodes:
 
 # Subscriber-only recording. No keyboard marks required.
 recording:
+  status_period_s: 0.5 # Большие статусы в файле: 2 Гц; переходы/новые ошибки сразу. Не частота управляющих топиков.
   point_lio_timing_topic: *point_lio_timing_topic  # Дополнительный String status в status.jsonl.
   resource_period_s: 2.0  # CPU/RAM процессов общего launch в resources.jsonl; чтение /proc, без команд роботу.
   enabled: true

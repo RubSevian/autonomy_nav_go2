@@ -5,6 +5,7 @@
 #include "dynamic_graph.h"
 #include "contour_graph.h"
 #include "path_validation.h"
+#include "goal_arrival.h"
 
 enum ReachVote {
     BLOCK = 0,
@@ -165,6 +166,7 @@ void UpdateGraphTraverability(const NavNodePtr& odom_node_ptr, const NavNodePtr&
  * Generate path to goal based on traversibility result
  * @param goal_ptr current goal node
  * @param global_path(return) return the global path from odom node position
+ * @param arrival classification from the current vehicle XY pose (not the graph node)
  * @param _nav_node_ptr(return) current navigation waypoint
  * @param _goal_p(return) goal position after free space adjust 
  * @param _is_fail(return) whether the planner fails to find the path
@@ -174,6 +176,7 @@ void UpdateGraphTraverability(const NavNodePtr& odom_node_ptr, const NavNodePtr&
 */
 
 bool PathToGoal(const NavNodePtr& goal_ptr,
+                FARGoalArrival::State arrival,
                 NodePtrStack& global_path,
                 NavNodePtr&   _nav_node_ptr,
                 Point3D&      _goal_p,

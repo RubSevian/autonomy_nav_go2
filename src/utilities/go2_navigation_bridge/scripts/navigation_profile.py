@@ -130,6 +130,9 @@ def load_profile(path):
         raise ValueError('Recorder and Point-LIO timing topics must match')
     if type(far.get('opencv_threads')) is not int or not 1 <= far['opencv_threads'] <= 16:
         raise ValueError('FAR opencv_threads must be an integer in 1..16')
+    deadband = follower.get('speedDeadband', .02)
+    if type(deadband) not in (int, float) or not math.isfinite(deadband) or not 0 <= deadband < local['max_speed_mps']:
+        raise ValueError('Invalid follower speedDeadband')
     if follower['sendSportCommand'] is not False or follower['is_real_robot'] is not False or follower['allowStaticPath'] is not False:
         raise ValueError('RL navigation requires Sport output disabled and continuously refreshed paths')
     if point['preprocess.lidar_type'] != 5 or point['mapping.imu_en'] is not True or point['publish.scan_publish_en'] is not True:

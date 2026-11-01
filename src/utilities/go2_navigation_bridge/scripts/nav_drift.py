@@ -2,6 +2,8 @@
 """Subscriber-only trajectory capture with explicit operator phase marks."""
 import argparse,csv,json,math,select,signal,sys,time,shutil,subprocess
 from datetime import datetime
+from temperature_capture import TemperatureCapture
+from status_capture import StatusCapture,event_signature
 from pathlib import Path
 from nav_capture_common import atomic,diagnostic_statuses,default_recording_profile,recording_config,LaunchResourceSampler
 
@@ -44,6 +46,8 @@ def main():
  velocitywriter.writerow(['receipt_mono_ns','receipt_ros_ns','clock_pair_span_ns','header_ns','frame',
                           'vx','vy','vz','wx','wy','wz',*[f'cov_{i}' for i in range(36)]])
  velocity_count=0
+ temperatures=TemperatureCapture(n,out)
+ statuses=StatusCapture(statusfile,config['status_period_s'])
  def clocks():
   before=time.monotonic_ns();ros=n.get_clock().now().nanoseconds;after=time.monotonic_ns()
   return (before+after)//2,ros,after-before
@@ -72,13 +76,19 @@ def main():
  def mission(m):
   try:
    data=json.loads(m.data)
-   keys=('observed_ns','session_id','navigation_session_id','goal_revision','state','state_entered_ns',
-         'base_motion_window','grasp_assessment','test_mode','return_to_start',
+   temperatures.mission=(data.get('state','UNKNOWN'),data.get('session_id',''),time.monotonic_ns())
+   keys=('observed_ns','session_id','navigation_session_id','goal_revision','state','reason','blockers','state_entered_ns',
+         'base_motion_window','grasp_assessment','test_mode','return_to_start','callback_timing',
          'full_attempt','max_full_attempts','attempt_scan_started_ns','attempt_history')
-   statusfile.write(json.dumps({'mono_ns':time.monotonic_ns(),'topic':'/go2/mission/status',
-                               'data':{k:data[k] for k in keys if k in data}})+'\n')
+   statuses.record({'mono_ns':time.monotonic_ns(),'topic':'/go2/mission/status',
+                    'data':{k:data[k] for k in keys if k in data}},event_signature(data))
   except (ValueError,TypeError):pass
- def state(topic,m):statusfile.write(json.dumps({'mono_ns':time.monotonic_ns(),'topic':topic,'data':m.data})+'\n')
+ def state(topic,m):
+  try:data=json.loads(m.data)
+  except (ValueError,TypeError):
+   try:data=yaml.load(m.data,Loader=getattr(yaml,'CSafeLoader',yaml.SafeLoader))
+   except yaml.YAMLError:data={'error':m.data}
+  statuses.record({'mono_ns':time.monotonic_ns(),'topic':topic,'data':m.data},event_signature(data))
  subs=[n.create_subscription(Odometry,'/state_estimation',odom,qos_profile_sensor_data)]
  subs.append(n.create_subscription(TwistWithCovarianceStamped,'/point_lio/velocity',velocity,qos_profile_sensor_data))
  subs.append(n.create_subscription(String,'/go2/mission/status',mission,10))
@@ -88,7 +98,8 @@ def main():
   subs.append(n.create_subscription(String,topic,lambda m,t=topic:state(t,m),10))
  def diagnostic(topic,m):
   count(topic,m)
-  statusfile.write(json.dumps({'mono_ns':time.monotonic_ns(),'topic':topic,'statuses':diagnostic_statuses(m)})+'\n')
+  data=diagnostic_statuses(m)
+  statuses.record({'mono_ns':time.monotonic_ns(),'topic':topic,'statuses':data},event_signature(data))
  for topic in ['/far/planner_status','/local_planner/status','/path_follower/status']:
   qos=QoSProfile(depth=1,durability=DurabilityPolicy.TRANSIENT_LOCAL) if topic=='/far/planner_status' else 10
   subs.append(n.create_subscription(DiagnosticArray,topic,lambda m,t=topic:diagnostic(t,m),qos))
@@ -110,6 +121,8 @@ def main():
  try:
   while not stop and (a.until_shutdown or time.monotonic()-begin<a.seconds):
    rclpy.spin_once(n,timeout_sec=config['spin_timeout_s'])
+   thermal_mono,thermal_ros,_=clocks();temperatures.sample(thermal_mono,thermal_ros)
+   statuses.flush(thermal_mono)
    if time.monotonic()>=next_resource_sample:
     try:resourcefile.write(json.dumps(sampler.sample())+'\n')
     except Exception as error:events.append({'mono_ns':time.monotonic_ns(),'resource_sample_error':type(error).__name__+': '+str(error)})
@@ -126,11 +139,12 @@ def main():
   events.append({'mono_ns':time.monotonic_ns(),'error':capture_error})
   raise
  finally:
+  statuses.flush(time.monotonic_ns(),force=True)
   with (out/'odometry.csv').open('w') as f:
    w=csv.writer(f);w.writerow(['receipt_mono_ns','header_ns','phase','frame','child','x','y','z','qx','qy','qz','qw','yaw','finite','dds_source_ns','dds_received_ns','receipt_ros_ns','clock_pair_span_ns']);w.writerows(rows)
   atomic(out/'marks.json',events);atomic(out/'streams.json',streams)
-  atomic(out/'capture.json',{'duration_s':time.monotonic()-begin,'planned_duration_s':None if a.until_shutdown else a.seconds,'until_shutdown':a.until_shutdown,'poses':len(rows),'velocity_samples':velocity_count,'capacity':config['pose_capacity'],'complete':capture_error is None and len(rows)<config['pose_capacity'] and velocity_count<config['pose_capacity'],'stop_reason':stop_reason,'error':capture_error,'recording_config':config,'config_path':str(a.config.resolve()),'own_publishers':n.get_publisher_names_and_types_by_node(n.get_name(),n.get_namespace()),'own_clients':n.get_client_names_and_types_by_node(n.get_name(),n.get_namespace()),'queue_drops':'NOT_OBSERVABLE','ground_truth':False})
-  velocityfile.close();statusfile.close();resourcefile.close();n.destroy_node();rclpy.shutdown()
+  atomic(out/'capture.json',{'duration_s':time.monotonic()-begin,'planned_duration_s':None if a.until_shutdown else a.seconds,'until_shutdown':a.until_shutdown,'poses':len(rows),'velocity_samples':velocity_count,'temperature_samples':temperatures.samples,'temperature_period_s':1.0,'status_recording':statuses.summary(),'capacity':config['pose_capacity'],'complete':capture_error is None and len(rows)<config['pose_capacity'] and velocity_count<config['pose_capacity'],'stop_reason':stop_reason,'error':capture_error,'recording_config':config,'config_path':str(a.config.resolve()),'own_publishers':n.get_publisher_names_and_types_by_node(n.get_name(),n.get_namespace()),'own_clients':n.get_client_names_and_types_by_node(n.get_name(),n.get_namespace()),'queue_drops':'NOT_OBSERVABLE','ground_truth':False})
+  temperatures.close();velocityfile.close();statusfile.close();resourcefile.close();n.destroy_node();rclpy.shutdown()
  if config['analyze_on_finish']:
   subprocess.run([sys.executable,str(Path(__file__).with_name('nav_drift_analyze.py')),str(out)],check=True)
   subprocess.run([sys.executable,str(Path(__file__).with_name('nav_motion_analyze.py')),str(out)],check=True)

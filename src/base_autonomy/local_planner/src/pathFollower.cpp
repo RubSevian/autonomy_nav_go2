@@ -25,6 +25,7 @@
 #include "visibility_graph_msg/msg/local_path_constraint.hpp"
 #include "local_planner/narrow_passage.hpp"
 #include "local_planner/unicycle_follower.hpp"
+#include "local_planner/path_reference.hpp"
 #include <sensor_msgs/msg/imu.h>
 
 #include "tf2/transform_datatypes.hpp"
@@ -60,6 +61,7 @@ double stopYawRateGain = 7.5;
 double maxYawRate = 45.0;
 double maxSpeed = 1.0;
 double maxAccel = 1.0;
+double speedDeadband = 0.02;  // Independent of scheduler jitter and acceleration limit.
 double switchTimeThre = 1.0;
 double dirDiffThre = 0.1;
 double omniDirDiffThre = 1.5;
@@ -132,6 +134,8 @@ float vehicleYawRate = 0;
 float vehicleSpeed = 0;
 
 double odomTime = 0;
+int64_t odomStampNs = 0, pathSourceStampNs = 0;
+std::string odomFrame;
 double joyTime = 0;
 double slowInitTime = 0;
 double stopInitTime = false;
@@ -242,6 +246,12 @@ void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
     RCLCPP_WARN(nh->get_logger(), "Ignoring non-finite odometry pose");
     return;
   }
+  const int64_t stamp = rclcpp::Time(odomIn->header.stamp).nanoseconds();
+  if (odomIn->header.frame_id.empty() ||
+      !local_planner::measurementFresh(stamp, nh->now().nanoseconds(), odomTimeoutSec) ||
+      (odomReceived && (stamp < odomStampNs || odomIn->header.frame_id != odomFrame))) return;
+  odomStampNs = stamp;
+  odomFrame = odomIn->header.frame_id;
   lastOdomReceive = std::chrono::steady_clock::now();
   odomReceived = true;
   odomTime = rclcpp::Time(odomIn->header.stamp).seconds();
@@ -252,9 +262,11 @@ void odomHandler(const nav_msgs::msg::Odometry::ConstSharedPtr odomIn)
   vehicleRoll = roll;
   vehiclePitch = pitch;
   vehicleYaw = yaw;
-  vehicleX = odomIn->pose.pose.position.x - cos(yaw) * sensorOffsetX + sin(yaw) * sensorOffsetY;
-  vehicleY = odomIn->pose.pose.position.y - sin(yaw) * sensorOffsetX - cos(yaw) * sensorOffsetY;
-  vehicleZ = odomIn->pose.pose.position.z;
+  const auto offset = local_planner::vehicleOffset(orientation.x,orientation.y,orientation.z,
+                                                  orientation.w,sensorOffsetX,sensorOffsetY);
+  vehicleX = position.x + offset[0];
+  vehicleY = position.y + offset[1];
+  vehicleZ = position.z + offset[2];
 
   if ((fabs(roll) > inclThre * PI / 180.0 || fabs(pitch) > inclThre * PI / 180.0) && useInclToStop) {
     stopInitTime = rclcpp::Time(odomIn->header.stamp).seconds();
@@ -279,6 +291,17 @@ void applyPath(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
   lastPathReceive = std::chrono::steady_clock::now();
   pathReceived = pathSize > 0;
   if (!pathReceived) { path.poses.clear(); pathInit = false; return; }
+  if (pathSize == 1) {
+    // A stop is meaningful without source geometry or a paired constraint.
+    path = *pathIn;
+    pathInit = true;
+    pathSourceStampNs = rclcpp::Time(pathIn->header.stamp).nanoseconds();
+    vehicleSpeed = 0; vehicleYawRate = 0;
+    trackedCandidateValid = false;
+    constraintMatchesPath = false;
+    resetNarrowHeadingLock();
+    return;
+  }
   for (const auto& pose : pathIn->poses) {
     if (!std::isfinite(pose.pose.position.x) || !std::isfinite(pose.pose.position.y) ||
         !std::isfinite(pose.pose.position.z)) {
@@ -289,11 +312,42 @@ void applyPath(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
     }
   }
 
-  pathSourceYaw = vehicleYaw;
+  // The pairing timestamp is publication time, not the construction origin.
+  // Real producers must provide the exact source pose in the paired constraint.
+
   const auto incomingStamp = stampKey(pathIn->header.stamp);
   const auto constraintStamp = stampKey(latestConstraint.header.stamp);
   const bool incomingConstraintMatches = constraintReceived && constraintValid &&
       incomingStamp.sec == constraintStamp.sec && incomingStamp.nanosec == constraintStamp.nanosec;
+  double sourceX=vehicleX, sourceY=vehicleY, sourceZ=vehicleZ;
+  double sourceRoll=vehicleRoll, sourcePitch=vehiclePitch, sourceYaw=vehicleYaw;
+  const auto nowNs = nh->now().nanoseconds();
+  if (incomingConstraintMatches) {
+    const auto& source = latestConstraint.source_pose;
+    const auto& p = source.pose.position;
+    const auto& q = source.pose.orientation;
+    const double norm = q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
+    const int64_t sourceNs = rclcpp::Time(source.header.stamp).nanoseconds();
+    const int64_t pathNs = rclcpp::Time(pathIn->header.stamp).nanoseconds();
+    if (source.header.frame_id != odomFrame || !odomReceived ||
+        !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+        !std::isfinite(norm) || norm < 1.e-12 || sourceNs > pathNs ||
+        !local_planner::measurementFresh(sourceNs,nowNs,pathTimeoutSec) ||
+        !local_planner::measurementFresh(pathNs,nowNs,pathTimeoutSec)) {
+      path.poses.clear(); pathReceived=false; pathInit=false;
+      vehicleSpeed=0; vehicleYawRate=0;
+      return;
+    }
+    sourceX=p.x; sourceY=p.y; sourceZ=p.z;
+    tf2::Quaternion rotation(q.x,q.y,q.z,q.w); rotation.normalize();
+    tf2::Matrix3x3(rotation).getRPY(sourceRoll,sourcePitch,sourceYaw);
+    pathSourceStampNs=sourceNs;
+  } else if (!allowStaticPath) {
+    path.poses.clear(); pathReceived=false; pathInit=false;
+    vehicleSpeed=0; vehicleYawRate=0;
+    return;
+  }
+  pathSourceYaw=sourceYaw;
   const bool equivalentRefresh = incomingConstraintMatches && pathInit && trackedCandidateValid &&
       latestConstraint.candidate_group_id == trackedCandidateGroupID &&
       latestConstraint.candidate_rotation_id == trackedCandidateRotationID &&
@@ -305,15 +359,11 @@ void applyPath(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
   for (int i = 0; i < pathSize; ++i) {
     path.poses[i] = pathIn->poses[i];
     if (equivalentRefresh) {
-      // Refresh coordinates are expressed in the current vehicle frame.
-      const double worldX = vehicleX + std::cos(vehicleYaw) * pathIn->poses[i].pose.position.x -
-          std::sin(vehicleYaw) * pathIn->poses[i].pose.position.y;
-      const double worldY = vehicleY + std::sin(vehicleYaw) * pathIn->poses[i].pose.position.x +
-          std::cos(vehicleYaw) * pathIn->poses[i].pose.position.y;
-      const double dx = worldX - vehicleXRec;
-      const double dy = worldY - vehicleYRec;
-      path.poses[i].pose.position.x = std::cos(vehicleYawRec) * dx + std::sin(vehicleYawRec) * dy;
-      path.poses[i].pose.position.y = -std::sin(vehicleYawRec) * dx + std::cos(vehicleYawRec) * dy;
+      const auto point = local_planner::reframePoint(
+          pathIn->poses[i].pose.position.x, pathIn->poses[i].pose.position.y,
+          {sourceX,sourceY,sourceYaw}, {vehicleXRec,vehicleYRec,vehicleYawRec});
+      path.poses[i].pose.position.x = point[0];
+      path.poses[i].pose.position.y = point[1];
     }
   }
 
@@ -339,8 +389,8 @@ void applyPath(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
     } else {
       if (trackedCandidateValid) ++followerPathSwitchCount;
       followerPathUpdateReason = latestConstraint.switch_reason;
-      vehicleXRec = vehicleX; vehicleYRec = vehicleY; vehicleZRec = vehicleZ;
-      vehicleRollRec = vehicleRoll; vehiclePitchRec = vehiclePitch; vehicleYawRec = vehicleYaw;
+      vehicleXRec = sourceX; vehicleYRec = sourceY; vehicleZRec = sourceZ;
+      vehicleRollRec = sourceRoll; vehiclePitchRec = sourcePitch; vehicleYawRec = sourceYaw;
       pathPointID = 0;
     }
     trackedCandidateValid = latestConstraint.candidate_group_id >= 0;
@@ -353,8 +403,8 @@ void applyPath(const nav_msgs::msg::Path::ConstSharedPtr pathIn)
     // is published first by localPlanner, so normal refreshes take the branch above.
     if (trackedCandidateValid) ++followerPathSwitchCount;
     followerPathUpdateReason = "WAITING_FOR_PAIRED_CONSTRAINT";
-    vehicleXRec = vehicleX; vehicleYRec = vehicleY; vehicleZRec = vehicleZ;
-    vehicleRollRec = vehicleRoll; vehiclePitchRec = vehiclePitch; vehicleYawRec = vehicleYaw;
+    vehicleXRec = sourceX; vehicleYRec = sourceY; vehicleZRec = sourceZ;
+    vehicleRollRec = sourceRoll; vehiclePitchRec = sourcePitch; vehicleYawRec = sourceYaw;
     pathPointID = 0;
   }
   pathInit = true;
@@ -391,7 +441,7 @@ void pathHandler(const nav_msgs::msg::Path::ConstSharedPtr message) {
     applyPath(message);
     return;
   }
-  if (!enableNarrowPassageMode && !constraintReceived && !pendingConstraint) {
+  if (allowStaticPath && !enableNarrowPassageMode && !constraintReceived && !pendingConstraint) {
     applyPath(message);  // Legacy producers may not publish constraints.
     return;
   }
@@ -483,6 +533,7 @@ int main(int argc, char** argv)
   nh->declare_parameter<double>("maxYawRate", maxYawRate);
   nh->declare_parameter<double>("maxSpeed", maxSpeed);
   nh->declare_parameter<double>("maxAccel", maxAccel);
+  nh->declare_parameter<double>("speedDeadband", speedDeadband);
   nh->declare_parameter<double>("switchTimeThre", switchTimeThre);
   nh->declare_parameter<double>("dirDiffThre", dirDiffThre);
   nh->declare_parameter<double>("omniDirDiffThre", omniDirDiffThre);
@@ -527,6 +578,9 @@ int main(int argc, char** argv)
   nh->get_parameter("maxYawRate", maxYawRate);
   nh->get_parameter("maxSpeed", maxSpeed);
   nh->get_parameter("maxAccel", maxAccel);
+  nh->get_parameter("speedDeadband", speedDeadband);
+  if (!std::isfinite(speedDeadband) || speedDeadband < 0. || speedDeadband >= maxSpeed)
+    throw std::invalid_argument("speedDeadband must be finite and in [0, maxSpeed)");
   nh->get_parameter("switchTimeThre", switchTimeThre);
   nh->get_parameter("dirDiffThre", dirDiffThre);
   nh->get_parameter("omniDirDiffThre", omniDirDiffThre);
@@ -767,9 +821,11 @@ int main(int argc, char** argv)
 
     const auto now = std::chrono::steady_clock::now();
     const bool odomFresh = odomReceived &&
+      local_planner::measurementFresh(odomStampNs, nh->now().nanoseconds(), odomTimeoutSec) &&
       std::chrono::duration<double>(now - lastOdomReceive).count() <= odomTimeoutSec;
     const bool pathFresh = pathReceived && (allowStaticPath ||
-      std::chrono::duration<double>(now - lastPathReceive).count() <= pathTimeoutSec);
+      (local_planner::measurementFresh(pathSourceStampNs,nh->now().nanoseconds(),pathTimeoutSec) &&
+       std::chrono::duration<double>(now - lastPathReceive).count() <= pathTimeoutSec));
     if (!odomFresh || !pathFresh || !pathInit || path.poses.empty()) {
       // A route must be produced again after a stale input.  This prevents
       // resuming an old trajectory when mapping or planning returns.
@@ -871,7 +927,7 @@ int main(int argc, char** argv)
       }
 
       const float maxSpeedStep = static_cast<float>(maxAccel * controlDt);
-      if (fabs(vehicleSpeed) < 2.0F * maxSpeedStep) vehicleYawRate = -stopYawRateGain * dirDiff;
+      if (fabs(vehicleSpeed) < 2.0 * speedDeadband) vehicleYawRate = -stopYawRateGain * dirDiff;
       else vehicleYawRate = -yawRateGain * dirDiff;
 
       if (vehicleYawRate > maxYawRate * PI / 180.0) vehicleYawRate = maxYawRate * PI / 180.0;
@@ -1007,7 +1063,7 @@ int main(int argc, char** argv)
       pubSkipCount--;
       if (pubSkipCount < 0) {
         cmd_vel.header.stamp = nh->now();
-        if (fabs(vehicleSpeed) <= std::max(maxSpeedStep, 1.0e-4F)) {
+        if (local_planner::applySpeedDeadband(vehicleSpeed, speedDeadband) == 0.) {
           cmd_vel.twist.linear.x = 0;
           cmd_vel.twist.linear.y = 0;
         } else {

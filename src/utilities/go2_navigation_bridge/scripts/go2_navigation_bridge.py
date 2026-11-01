@@ -5,6 +5,7 @@ import math
 import time
 import uuid
 import signal
+from contextlib import nullcontext
 from rclpy.executors import ExternalShutdownException
 from rclpy.signals import SignalHandlerOptions
 import rclpy
@@ -24,6 +25,8 @@ from navigation_contract import valid_cloud_layout, locomotion_ready
 from localization_pairing import LocalizationPairing, PairingConfig, PoseSample, PairLookupError, pose_errors
 from tf2_ros import Buffer, TransformListener, TransformException
 from rclpy.time import Time
+from input_timing import InputTiming, timed_input
+from localization_ingest import drain_pending
 
 def odom_pose(msg):
     p, q = msg.pose.pose.position, msg.pose.pose.orientation
@@ -45,19 +48,25 @@ class LocalizationBuffer(Buffer):
     No extra DDS subscription, queue, thread or interpolation-generated sample.
     Static transforms continue through Buffer.set_transform_static unchanged.
     """
-    def __init__(self, pairing):
+    def __init__(self, pairing, input_timing=None):
         super().__init__()
         self.pairing = pairing
+        self.input_timing=input_timing
 
     def set_transform(self, transform, authority):
-        super().set_transform(transform, authority)
-        if transform.child_frame_id == 'aft_mapped' and transform.header.frame_id in ('map', 'camera_init'):
-            self.pairing.observe_tf(transform_pose(transform))
+        relevant=transform.child_frame_id == 'aft_mapped' and transform.header.frame_id in ('map', 'camera_init')
+        timing=(self.input_timing.callback('tf',transform)
+                if relevant and self.input_timing is not None else nullcontext())
+        with timing:
+            super().set_transform(transform, authority)
+            if relevant:self.pairing.observe_tf(transform_pose(transform))
 
 
 class NavigationBridge(Node):
     def __init__(self):
         super().__init__('go2_navigation_bridge')
+        self.input_timing=InputTiming(lambda:self.get_clock().now().nanoseconds)
+        self.last_tick_started_ns=None
         from rcl_interfaces.msg import ParameterDescriptor
         immutable = ParameterDescriptor(read_only=True)
         def param(name, value):
@@ -116,7 +125,7 @@ class NavigationBridge(Node):
         self.last_graph_check = 0.
         self.last_tf_check = 0.
         self.tf_error = "not_observed"
-        self.tf_buffer = LocalizationBuffer(self.pairing)
+        self.tf_buffer = LocalizationBuffer(self.pairing,self.input_timing)
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.cmd_pub = self.create_publisher(TwistStamped, '/cmd_vel', 1)
         self.ready_pub = self.create_publisher(String, '/go2/mission/readiness', 1)
@@ -126,7 +135,7 @@ class NavigationBridge(Node):
         self.create_subscription(String, '/go2/locomotion_status', self.locomotion, 1)
         odom_depth=param('odometry_subscription_depth',512)
         if type(odom_depth) is not int or odom_depth<1:raise ValueError('odometry_subscription_depth must be positive integer')
-        self.create_subscription(Odometry, '/state_estimation', self.odom,
+        self.odometry_subscription=self.create_subscription(Odometry, '/state_estimation', self.odom,
             QoSProfile(depth=odom_depth,reliability=ReliabilityPolicy.BEST_EFFORT))
         self.create_subscription(Imu, param('imu_topic', '/utlidar/transformed_raw_imu'), self.imu, qos_profile_sensor_data)
         self.create_subscription(PointCloud2, param('lidar_topic', '/utlidar/transformed_cloud'), self.cloud, qos_profile_sensor_data)
@@ -191,6 +200,7 @@ class NavigationBridge(Node):
     def locomotion(self, msg):
         self.gate.locomotion(locomotion_ready(msg.data), time.monotonic())
 
+    @timed_input('odom')
     def odom(self, msg):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
         valid = self.header_valid(msg) and msg.header.frame_id in ('map','camera_init') and msg.child_frame_id == 'aft_mapped' and all(math.isfinite(x) for x in (p.x,p.y,p.z,q.x,q.y,q.z,q.w)) and .5 < sum(x*x for x in (q.x,q.y,q.z,q.w)) < 1.5
@@ -202,10 +212,12 @@ class NavigationBridge(Node):
             self.gate.observe_pair(0,False)
         self.gate.observe('odom', valid, time.monotonic(), self.header_age(msg))
 
+    @timed_input('imu')
     def imu(self, msg):
         a, g = msg.linear_acceleration, msg.angular_velocity
         self.gate.observe('imu', self.header_valid(msg) and msg.header.frame_id == 'body' and all(math.isfinite(x) for x in (a.x,a.y,a.z,g.x,g.y,g.z)), time.monotonic(), self.header_age(msg))
 
+    @timed_input('lidar')
     def cloud(self, msg):
         valid = self.header_valid(msg) and msg.header.frame_id == 'body' and valid_cloud_layout(msg)
         self.gate.observe('lidar', valid, time.monotonic(), self.header_age(msg))
@@ -351,11 +363,21 @@ class NavigationBridge(Node):
         return vehicle
 
     def tick(self):
+        tick_started_ns=time.monotonic_ns()
+        self.tick_gap_s=(tick_started_ns-(self.last_tick_started_ns or tick_started_ns))/1e9
+        self.last_tick_started_ns=tick_started_ns
         now = time.monotonic()
         if self.gate.mode == 'stack' and now - self.last_tf_check >= self.tf_check_period:
+            # The executor may choose a timer ahead of queued subscription work.
+            # Drain bounded batches of BOTH streams; retain exact original stamps.
+            self.localization_batch=dict(odom=drain_pending(self.odometry_subscription,self.odom),
+                tf=drain_pending(self.tf_listener.tf_sub,self.tf_listener.callback))
+            now=time.monotonic()
             self.goal_tf_valid = False
             self.last_tf_check = now
+            pairing_started_ns=time.monotonic_ns()
             pair = self.pairing.select(self.get_clock().now().nanoseconds, self.resolve_vehicle)
+            self.pairing_work_s=(time.monotonic_ns()-pairing_started_ns)/1e9
             # Charge every tick against the ORIGINAL measurement time, including
             # fallback and ticks between TF checks. Reuse cannot renew freshness.
             tf_age = ((self.get_clock().now().nanoseconds - pair.odom.stamp_ns) / 1e9
@@ -451,7 +473,7 @@ class NavigationBridge(Node):
         if now - self.last_status_publish < self.status_period:
             return
         self.last_status_publish = now
-        self.status_pub.publish(String(data=json.dumps(dict(observed_ns=time.monotonic_ns(), goal=self.goals.snapshot(now), session_id=self.session, input_mode=self.gate.mode, navigation_ready=self.gate.localization_ready(now), localization_recovery_good=self.gate.recovery.good if self.gate.recovery else None, path_recovery=self.path_recovery_state, path_recovery_since=self.path_recovery.since, command_enabled=enabled, cancel_latched=self.gate.cancelled, far_cancel_pending=self.far_cancel_pending or self.far_cancel_future is not None, new_goal_required=self.gate.mode=="stack" and not self.gate.goal_received, block_reason=self.gate.block_reason, tf_error=self.tf_error, tf_pair=self.pairing.snapshot(self.get_clock().now().nanoseconds), health_ages={name: None if stamp is None else now-stamp for name,stamp in self.gate.health.items()}, odom_frame=self.last_odom_frame, command=list(value), base_locked=self.mission_health.base_locked, return_request_ns=self.mission_health.return_request_ns))))
+        self.status_pub.publish(String(data=json.dumps(dict(localization_batch=getattr(self,'localization_batch',{}), input_timing=self.input_timing.snapshot(), callback_timing=dict(tick_gap_s=self.tick_gap_s,pre_status_work_s=(time.monotonic_ns()-tick_started_ns)/1e9,pairing_work_s=getattr(self,'pairing_work_s',None)), observed_ns=time.monotonic_ns(), goal=self.goals.snapshot(now), session_id=self.session, input_mode=self.gate.mode, navigation_ready=self.gate.localization_ready(now), localization_recovery_good=self.gate.recovery.good if self.gate.recovery else None, path_recovery=self.path_recovery_state, path_recovery_since=self.path_recovery.since, command_enabled=enabled, cancel_latched=self.gate.cancelled, far_cancel_pending=self.far_cancel_pending or self.far_cancel_future is not None, new_goal_required=self.gate.mode=="stack" and not self.gate.goal_received, block_reason=self.gate.block_reason, tf_error=self.tf_error, tf_pair=self.pairing.snapshot(self.get_clock().now().nanoseconds), health_ages={name: None if stamp is None else now-stamp for name,stamp in self.gate.health.items()}, odom_frame=self.last_odom_frame, requested_command=list(self.gate.request_unscaled), command_scale=self.gate.request_scale, command=list(value), base_locked=self.mission_health.base_locked, return_request_ns=self.mission_health.return_request_ns))))
 
 def main():
     # Stop spin in the Python thread before destroying DDS handles. The default

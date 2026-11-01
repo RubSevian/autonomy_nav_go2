@@ -64,6 +64,7 @@ if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_narrow_passage test/test_narrow_passage.cpp)
   ament_add_gtest(test_unicycle_follower test/test_unicycle_follower.cpp)
+  ament_add_gtest(test_path_reference test/test_path_reference.cpp)
 endif()
 
 ament_package()

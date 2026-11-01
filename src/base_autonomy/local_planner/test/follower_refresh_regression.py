@@ -70,6 +70,8 @@ def run_case(model):
         revision += 1
         constraint = LocalPathConstraint()
         constraint.header = path.header
+        constraint.source_pose.header = odom.header
+        constraint.source_pose.pose = odom.pose.pose
         constraint.path_revision = revision
         constraint.candidate_group_id = -1 if stop else 3
         constraint.candidate_rotation_id = -1 if stop else 18

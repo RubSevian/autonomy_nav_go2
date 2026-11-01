@@ -121,6 +121,9 @@ install(
 
 if(BUILD_TESTING)
   enable_testing()
+  add_executable(rotation_covariance_test tests/rotation_covariance_test.cpp)
+  target_compile_options(rotation_covariance_test PRIVATE -UNDEBUG)
+  add_test(NAME rotation_covariance_test COMMAND rotation_covariance_test)
   add_executable(velocity_observation_test tests/velocity_observation_test.cpp)
   target_include_directories(velocity_observation_test PRIVATE src)
   target_compile_options(velocity_observation_test PRIVATE -UNDEBUG)
