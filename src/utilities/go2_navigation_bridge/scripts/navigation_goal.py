@@ -47,7 +47,7 @@ class GoalTracker:
         if stamp_ns <= self.stamp_ns:
             return False
         # Retransmission must not reset a running or completed request.
-        if target == self.target and frame == self.frame and self.state not in ('LOCALIZATION_LOST','GOAL_UNREACHABLE','AUTHORITY_LOST','CONTINUATION_NOT_FOUND'):
+        if target == self.target and frame == self.frame and self.state not in ('LOCALIZATION_LOST','GOAL_UNREACHABLE','AUTHORITY_LOST','CONTINUATION_NOT_FOUND','ARRIVAL_NOT_CONFIRMED'):
             return False
         self.revision += 1
         self.target, self.frame, self.stamp_ns = target, frame, stamp_ns
@@ -68,7 +68,7 @@ class GoalTracker:
             self.wait_spent += max(0.,now-self.wait_updated)
         self.wait_updated=now
         if self.state in ('REPLANNING','ARRIVAL_CONFIRMING') and self.wait_spent >= self.wait_budget_s:
-            self.finish('CONTINUATION_NOT_FOUND',now)
+            self.finish('ARRIVAL_NOT_CONFIRMED' if self.state=='ARRIVAL_CONFIRMING' else 'CONTINUATION_NOT_FOUND',now)
 
     @property
     def paused(self):
@@ -104,7 +104,17 @@ class GoalTracker:
             self.inside_since=None;self.settle_anchor=None
             return
         if stamp_ns<=self.last_pose_stamp:
-            return # Reusing a TF pair cannot advance the stationary window.
+            # Point-LIO may revise a pose at the same measurement stamp. A
+            # duplicate cannot advance dwell, but a changed pose must break it.
+            anchor=self.settle_anchor
+            changed=(self.error_xy>self.tolerance or stamp_ns<self.last_pose_stamp or
+                (anchor is not None and (math.hypot(x-anchor[0],y-anchor[1])>self.settle_position_m or
+                abs(math.atan2(math.sin(yaw-anchor[2]),math.cos(yaw-anchor[2])))>self.settle_yaw_rad)))
+            if changed:
+                self.inside_since=None;self.settle_anchor=None
+                if self.error_xy>self.tolerance and self.state=='ARRIVAL_CONFIRMING':
+                    self.state='REPLANNING';self.hold_since=None
+            return
         self.last_pose_stamp=stamp_ns
         measured=now if measurement_time is None else measurement_time
         if not math.isfinite(measured) or measured>now:
@@ -125,7 +135,7 @@ class GoalTracker:
             self.inside_since=None;self.settle_anchor=None
             return
         anchor=self.settle_anchor
-        moved=(anchor is None or math.hypot(x-anchor[0],y-anchor[1])>self.settle_position_m
+        moved=(anchor is None or self.inside_since is None or math.hypot(x-anchor[0],y-anchor[1])>self.settle_position_m
                or abs(math.atan2(math.sin(yaw-anchor[2]),math.cos(yaw-anchor[2])))>self.settle_yaw_rad)
         if moved:
             self.settle_anchor=(x,y,yaw);self.inside_since=measured

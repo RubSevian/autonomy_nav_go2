@@ -1224,6 +1224,9 @@ void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
 }
 
 void FARMaster::PublishNavigationActive(bool active) {
+  // A pause invalidates the old handoff, not the task. Recovery must emit a
+  // fresh route commit/status even if graph nodes and waypoint are unchanged.
+  if (!active) has_committed_route_ = false;
   if (navigation_heartbeat_pub_) {
     std_msgs::msg::String heartbeat;
     const auto stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(

@@ -90,6 +90,11 @@ class GoalContinuationTests(unittest.TestCase):
         for i in range(11):self.status(g,'ADJUSTED_GOAL_WAIT',110+i,2.+i*.11)
         self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
 
+    def test_unconfirmed_stop_has_distinct_final_reason(self):
+        g=self.goal(wait_budget_s=1.)
+        for i in range(12):self.position(g,.12,-.31,2.+i*.1,1000+i,False)
+        self.assertEqual(g.state,'ARRIVAL_NOT_CONFIRMED')
+
     def test_cancel_and_localization_loss_cannot_be_revived(self):
         for state in ('CANCELLED','LOCALIZATION_LOST','AUTHORITY_LOST','SUCCEEDED'):
             g=self.goal();g.finish(state,2.)
@@ -116,6 +121,24 @@ class GoalContinuationTests(unittest.TestCase):
         self.assertIsNone(g.inside_since)
         self.position(g,.12,-.31,3.,1200)
         self.assertNotEqual(g.state,'SUCCEEDED')
+
+    def test_same_stamp_pose_revision_can_break_but_not_advance_dwell(self):
+        g=self.goal();self.position(g,.12,-.31,2.,1000)
+        self.position(g,.12,-.31,2.2,1100)
+        self.position(g,0.,0.,2.3,1100) # revised outside A, same measurement stamp
+        self.assertEqual(g.state,'REPLANNING');self.assertIsNone(g.inside_since)
+        self.position(g,.12,-.31,2.4,1200)
+        self.position(g,.12,-.31,2.6,1300)
+        self.assertNotEqual(g.state,'SUCCEEDED')
+        self.position(g,.15,-.31,2.7,1300) # revision moved inside A, breaks anchor
+        self.assertIsNone(g.inside_since)
+
+    def test_external_tf_expiry_restarts_confirmation_without_old_anchor(self):
+        g=self.goal();self.position(g,.12,-.31,2.,1000)
+        g.inside_since=None # same revocation performed by the TF expiry guard
+        self.position(g,.12,-.31,2.2,1100)
+        self.assertNotEqual(g.state,'SUCCEEDED')
+        self.assertEqual(g.inside_since,2.2)
 
     def test_profile_rejects_inconsistent_wait_and_settle_limits(self):
         import tempfile,yaml

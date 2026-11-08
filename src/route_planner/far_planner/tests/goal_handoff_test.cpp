@@ -1,0 +1,26 @@
+#include "far_planner/far_planner.h"
+#include <cassert>
+
+struct FARGoalContractTest {
+  static void Run() {
+    FARMaster planner;
+    planner.goal_received_=true;
+    planner.has_goal_original_=true;
+    planner.has_committed_route_=true;
+    planner.navigation_active_=true;
+    planner.PublishNavigationActive(false);
+    assert(!planner.navigation_active_);
+    assert(!planner.has_committed_route_);
+    assert(planner.goal_received_ && planner.has_goal_original_);
+    // Heartbeats must not accidentally restore authorization or discard A.
+    planner.PublishNavigationActive(false);
+    assert(!planner.has_committed_route_ && planner.goal_received_);
+    planner.PublishNavigationActive(true);
+    assert(planner.navigation_active_ && !planner.has_committed_route_);
+  }
+};
+int main(int argc,char** argv) {
+  rclcpp::init(argc,argv);
+  FARGoalContractTest::Run();
+  rclcpp::shutdown();
+}

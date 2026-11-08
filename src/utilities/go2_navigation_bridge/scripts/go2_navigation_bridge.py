@@ -203,6 +203,8 @@ class NavigationBridge(Node):
     def locomotion(self, msg):
         self.gate.locomotion(locomotion_ready(msg.data), time.monotonic())
         self.stopped_observed=locomotion_stopped(msg.data,time.monotonic_ns(),self.gate.command_timeout)
+        if self.goals.far_mode and self.stopped_observed is None:
+            self.goals.inside_since=None;self.goals.settle_anchor=None
 
     @timed_input('odom')
     def odom(self, msg):
@@ -265,6 +267,8 @@ class NavigationBridge(Node):
                 if self.goals.far_status({v.key:v.value for v in status.values}, stamp, time.monotonic()):
                     self.gate.goal_received = False
                     self.gate.clear_request()
+                if self.goals.far_mode and self.goals.last_far_stamp==stamp and self.goals.far_reason=='ROUTE_COMMITTED':
+                    self.validated_route_time=time.monotonic()-age
                 if self.goals.paused:
                     self.gate.clear_request()
                     self.command_after_ns=self.get_clock().now().nanoseconds
@@ -287,6 +291,12 @@ class NavigationBridge(Node):
             self.active_session = session
             self.active_observed_ns = observed
             self.active_hint = data['active']
+            if (self.far_route and not self.active_hint and self.gate.goal_received
+                    and self.goals.state in ('REQUESTED','ACTIVE')
+                    and observed/1e9>getattr(self,'validated_route_time',0.)):
+                self.goals.advance(time.monotonic())
+                self.goals.state='REPLANNING'
+                self.gate.clear_request()
             self.gate.planner_active(self.active_hint, observed / 1e9)
         except (ValueError,KeyError,TypeError):
             self.gate.planner_active(False, time.monotonic())
@@ -401,6 +411,7 @@ class NavigationBridge(Node):
             self.goal_tf_valid = valid
             if not valid:
                 self.goals.inside_since = None
+                self.goals.settle_anchor = None
             if valid:
                 x, y, _ = pair.vehicle.position
                 qx,qy,qz,qw=pair.vehicle.quaternion
@@ -426,6 +437,7 @@ class NavigationBridge(Node):
                 self.tf_error = 'pair_expired' if age > 0 else 'pair_in_future'
                 self.goal_tf_valid = False
                 self.goals.inside_since = None
+                self.goals.settle_anchor = None
                 self.gate.observe('tf', False, time.monotonic())
         self.goals.advance(now)
         if self.goals.state=='CONTINUATION_NOT_FOUND' and self.gate.goal_received:
@@ -481,7 +493,8 @@ class NavigationBridge(Node):
             self.goals.finish('AUTHORITY_LOST',now)
             self.gate.goal_received=False;self.gate.clear_request()
         if self.far_route and self.goals.stamp_ns>0 and self.goals.state in (
-                'SUCCEEDED','CONTINUATION_NOT_FOUND','AUTHORITY_LOST','LOCALIZATION_LOST','GOAL_UNREACHABLE','CANCELLED'):
+                'SUCCEEDED','CONTINUATION_NOT_FOUND','ARRIVAL_NOT_CONFIRMED','AUTHORITY_LOST','LOCALIZATION_LOST','GOAL_UNREACHABLE','CANCELLED'):
+            self.gate.goal_received=False;self.gate.clear_request()
             key=(self.goals.revision,self.goals.stamp_ns)
             if getattr(self,'far_cancelled_goal_key',None)!=key:
                 self.far_cancelled_goal_key=key

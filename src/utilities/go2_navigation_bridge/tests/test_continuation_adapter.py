@@ -1,6 +1,7 @@
 """Actual bridge tick and callbacks on fake I/O ports: no node or DDS init."""
 from pathlib import Path
 import sys
+import json
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
@@ -23,6 +24,7 @@ class ContinuationAdapterTests(unittest.TestCase):
         n=NS(gate=gate,goals=goal,last_tick_started_ns=None,last_tf_check=100.,tf_check_period=1.,
              pairing=NS(selected=None),local_route=False,far_route=True,active_hint=True,
              last_graph_check=100.,graph_check_period=1.,active_owner_gid=b'x',session='nav',
+             active_owner_since_ns=0,active_observed_ns=0,active_session='',
              last_status_publish=100.,status_period=1.,path_recovery=PathRecovery(),path_recovery_state='READY',
              mission_health=NS(graph=lambda *a:None,base_locked=False,return_request_ns=0,valid=lambda *a:True),
              get_publishers_info_by_topic=lambda *a:[],get_clock=lambda:NS(now=lambda:NS(nanoseconds=100_000_000_000)),
@@ -70,6 +72,43 @@ class ContinuationAdapterTests(unittest.TestCase):
     def test_wait_timeout_stops_and_schedules_far_cancel(self):
         n,out,_=self.node();n.goals.wait_spent=10.;self.tick(n)
         self.assertEqual(n.goals.state,'CONTINUATION_NOT_FOUND')
+        self.assertFalse(n.gate.goal_received);self.assertTrue(n.far_cancel_pending)
+        self.assertEqual(out[-1].twist.linear.x,0.)
+
+    def test_stop_heartbeat_accounts_pause_before_diagnostic_arrives(self):
+        n,out,_=self.node();n.goals.state='ACTIVE'
+        msg=NS(data=json.dumps(dict(observed_ns=99_990_000_000,session_id='far',active=False)))
+        with patch('go2_navigation_bridge.time.monotonic',return_value=100.),patch('go2_navigation_bridge.time.monotonic_ns',return_value=100_000_000_000):
+            NavigationBridge.active(n,msg)
+        self.assertEqual(n.goals.state,'REPLANNING')
+        self.tick(n);self.assertEqual(out[-1].twist.linear.x,0.)
+
+    def test_delayed_stop_heartbeat_cannot_undo_newer_route_commit(self):
+        n,_,_=self.node();n.far_status_timeout=1.5;n.header_age=lambda msg:.01
+        fields=dict(goal_original_x='1',goal_original_y='0',goal_original_z='0',goal_stamp_ns='10',reason_code='ROUTE_COMMITTED')
+        msg=NS(header=NS(stamp=NS(sec=100,nanosec=0)),status=[NS(name='far_planner',values=[NS(key=k,value=v) for k,v in fields.items()])])
+        with patch('go2_navigation_bridge.time.monotonic',return_value=100.),patch('go2_navigation_bridge.time.monotonic_ns',return_value=100_000_000_000):
+            NavigationBridge.far_status(n,msg)
+            self.assertEqual(n.goals.state,'ACTIVE')
+            NavigationBridge.active(n,NS(data=json.dumps(dict(observed_ns=99_980_000_000,session_id='far',active=False))))
+            self.assertEqual(n.goals.state,'ACTIVE')
+            self.assertFalse(n.gate.active) # Still no movement until the fresh active heartbeat.
+            NavigationBridge.active(n,NS(data=json.dumps(dict(observed_ns=99_995_000_000,session_id='far',active=True))))
+            self.assertEqual(n.goals.state,'ACTIVE');self.assertTrue(n.gate.active)
+
+    def test_r3_motion_report_immediately_breaks_arrival_window(self):
+        import yaml
+        n,_,_=self.node();n.goals.state='ARRIVAL_CONFIRMING'
+        n.goals.inside_since=99.6;n.goals.settle_anchor=(1.,0.,0.)
+        report=dict(state='ACTIVE',phase='RL_ACTIVE',command_source='NAVIGATION',
+                    output_enabled=True,fault_latched=False,observed_ns=100_000_000_000,motion_command=[.1,0,0])
+        with patch('go2_navigation_bridge.time.monotonic',return_value=100.),patch('go2_navigation_bridge.time.monotonic_ns',return_value=100_000_000_000):
+            NavigationBridge.locomotion(n,NS(data=yaml.safe_dump(report)))
+        self.assertIsNone(n.goals.inside_since);self.assertIsNone(n.goals.settle_anchor)
+
+    def test_unconfirmed_arrival_cannot_leave_velocity_authorized(self):
+        n,out,_=self.node();n.goals.state='ARRIVAL_NOT_CONFIRMED'
+        self.tick(n)
         self.assertFalse(n.gate.goal_received);self.assertTrue(n.far_cancel_pending)
         self.assertEqual(out[-1].twist.linear.x,0.)
 
