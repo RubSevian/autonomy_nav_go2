@@ -12,7 +12,14 @@ from transform_sensors.point_records import PointRecords
 from transform_sensors.time_alignment import SensorTimeAlignment
 NAV = Path(__file__).resolve().parents[2] / 'go2_navigation_bridge/scripts/navigation_gate.py'
 spec=importlib.util.spec_from_file_location('production_navigation_gate', NAV)
-nav=importlib.util.module_from_spec(spec);spec.loader.exec_module(nav)
+nav=importlib.util.module_from_spec(spec)
+# The standalone bridge scripts import siblings from their script directory.
+# Supply that directory only while loading the production module for this test.
+sys.path.insert(0, str(NAV.parent))
+try:
+    spec.loader.exec_module(nav)
+finally:
+    sys.path.pop(0)
 S = 1730721639 * NS
 R = 1791732363 * NS
 M = 1000 * NS
