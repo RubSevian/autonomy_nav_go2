@@ -1,9 +1,10 @@
+#include <unistd.h>
+
 #include <iostream>
 #include <chrono>
 #include <vector>
 #include <fstream>
 #include <cmath>
-#include <unistd.h>
 
 #include "rclcpp/rclcpp.hpp"
 #include <sensor_msgs/msg/imu.hpp>
@@ -31,118 +32,119 @@ double ang_z2y_proj = 0;
 
 void imu_handler(const sensor_msgs::msg::Imu::ConstSharedPtr msg_in)
 {
-    double theta = 15.1 / 180 * 3.1415926; // Convert it to z-up
+  double theta = 15.1 / 180 * 3.1415926;   // Convert it to z-up
 
-    double x = msg_in->angular_velocity.x;
-    double y = -msg_in->angular_velocity.y;
-    double z = -msg_in->angular_velocity.z;
+  double x = msg_in->angular_velocity.x;
+  double y = -msg_in->angular_velocity.y;
+  double z = -msg_in->angular_velocity.z;
 
-    double x2 = x * cos(theta) - z * sin(theta);
-    double y2 = y;
-    double z2 = x * sin(theta) + z * cos(theta);
+  double x2 = x * cos(theta) - z * sin(theta);
+  double y2 = y;
+  double z2 = x * sin(theta) + z * cos(theta);
 
-    double acc_x = msg_in->linear_acceleration.x;
-    double acc_y = -msg_in->linear_acceleration.y;
-    double acc_z = -msg_in->linear_acceleration.z;
+  double acc_x = msg_in->linear_acceleration.x;
+  double acc_y = -msg_in->linear_acceleration.y;
+  double acc_z = -msg_in->linear_acceleration.z;
 
-    double acc_x2 = acc_x * cos(theta) - acc_z * sin(theta);
-    double acc_y2 = acc_y;
-    double acc_z2 = acc_x * sin(theta) + acc_z * cos(theta);
+  double acc_x2 = acc_x * cos(theta) - acc_z * sin(theta);
+  double acc_y2 = acc_y;
+  double acc_z2 = acc_x * sin(theta) + acc_z * cos(theta);
 
-    sensor_msgs::msg::Imu msg_store = *msg_in;
-    msg_store.angular_velocity.x = x2;
-    msg_store.angular_velocity.y = y2;
-    msg_store.angular_velocity.z = z2;
-    msg_store.linear_acceleration.x = acc_x2;
-    msg_store.linear_acceleration.y = acc_y2;
-    msg_store.linear_acceleration.z = acc_z2;
-    
-    if (state == 1){
-        imu_static.push_back(msg_store);
-    }
-    else if (state == 2){
-        imu_rotation_positive_z.push_back(msg_store);
-    }
+  sensor_msgs::msg::Imu msg_store = *msg_in;
+  msg_store.angular_velocity.x = x2;
+  msg_store.angular_velocity.y = y2;
+  msg_store.angular_velocity.z = z2;
+  msg_store.linear_acceleration.x = acc_x2;
+  msg_store.linear_acceleration.y = acc_y2;
+  msg_store.linear_acceleration.z = acc_z2;
+
+  if (state == 1) {
+    imu_static.push_back(msg_store);
+  } else if (state == 2) {
+    imu_rotation_positive_z.push_back(msg_store);
+  }
 }
 
-void serialize_to_file(){
-    const char* homeDir = getenv("HOME");
-    std::string file_path = std::string(homeDir) + "/Desktop/imu_calib_data.yaml";
-    std::ofstream file;
-    file.open(file_path, std::ios::out);
-    file << "acc_bias_x: " << acc_bias_x << std::endl;
-    file << "acc_bias_y: " << acc_bias_y << std::endl;
-    file << "acc_bias_z: " << acc_bias_z << std::endl;
-    file << "ang_bias_x: " << ang_bias_x << std::endl;
-    file << "ang_bias_y: " << ang_bias_y << std::endl;
-    file << "ang_bias_z: " << ang_bias_z << std::endl;
-    file << "ang_z2x_proj: " << ang_z2x_proj << std::endl;
-    file << "ang_z2y_proj: " << ang_z2y_proj << std::endl;
-    file.close();
+void serialize_to_file()
+{
+  const char * homeDir = getenv("HOME");
+  std::string file_path = std::string(homeDir) + "/Desktop/imu_calib_data.yaml";
+  std::ofstream file;
+  file.open(file_path, std::ios::out);
+  file << "acc_bias_x: " << acc_bias_x << std::endl;
+  file << "acc_bias_y: " << acc_bias_y << std::endl;
+  file << "acc_bias_z: " << acc_bias_z << std::endl;
+  file << "ang_bias_x: " << ang_bias_x << std::endl;
+  file << "ang_bias_y: " << ang_bias_y << std::endl;
+  file << "ang_bias_z: " << ang_bias_z << std::endl;
+  file << "ang_z2x_proj: " << ang_z2x_proj << std::endl;
+  file << "ang_z2y_proj: " << ang_z2y_proj << std::endl;
+  file.close();
 }
 
-void estimate_bias(){
+void estimate_bias()
+{
     // Constant bias from static
-    int static_count = 0;
-    int positive_rot_count = 0;
-    int negative_rot_count = 0;
+  int static_count = 0;
+  int positive_rot_count = 0;
+  int negative_rot_count = 0;
 
-    double ang_rot_x_mean_positive = 0;
-    double ang_rot_y_mean_positive = 0;
-    double ang_rot_z_mean_positive = 0;
+  double ang_rot_x_mean_positive = 0;
+  double ang_rot_y_mean_positive = 0;
+  double ang_rot_z_mean_positive = 0;
 
-    double ang_rot_x_mean_negative = 0;
-    double ang_rot_y_mean_negative = 0;
-    double ang_rot_z_mean_negative = 0;
-    
-    std::cout << "static size:" << imu_static.size() << std::endl;
-    std::cout << "pos size:" << imu_rotation_positive_z.size() << std::endl;
+  double ang_rot_x_mean_negative = 0;
+  double ang_rot_y_mean_negative = 0;
+  double ang_rot_z_mean_negative = 0;
+
+  std::cout << "static size:" << imu_static.size() << std::endl;
+  std::cout << "pos size:" << imu_rotation_positive_z.size() << std::endl;
     // std::cout << "neg size:" << imu_rotation_negative_z.size() << std::endl;
 
-    for (auto imu_data: imu_static){
-        static_count += 1;
+  for (auto imu_data : imu_static) {
+    static_count += 1;
 
-        acc_bias_x += imu_data.linear_acceleration.x;
-        acc_bias_y += imu_data.linear_acceleration.y;
-        acc_bias_z += imu_data.linear_acceleration.z;
+    acc_bias_x += imu_data.linear_acceleration.x;
+    acc_bias_y += imu_data.linear_acceleration.y;
+    acc_bias_z += imu_data.linear_acceleration.z;
 
-        ang_bias_x += imu_data.angular_velocity.x;
-        ang_bias_y += imu_data.angular_velocity.y;
-        ang_bias_z += imu_data.angular_velocity.z;
-    }
-    acc_bias_x /= imu_static.size();
-    acc_bias_y /= imu_static.size();
-    acc_bias_z /= imu_static.size();
-    ang_bias_x /= imu_static.size();
-    ang_bias_y /= imu_static.size();
-    ang_bias_z /= imu_static.size();
-    
-    acc_bias_z -= 9.81;
+    ang_bias_x += imu_data.angular_velocity.x;
+    ang_bias_y += imu_data.angular_velocity.y;
+    ang_bias_z += imu_data.angular_velocity.z;
+  }
+  acc_bias_x /= imu_static.size();
+  acc_bias_y /= imu_static.size();
+  acc_bias_z /= imu_static.size();
+  ang_bias_x /= imu_static.size();
+  ang_bias_y /= imu_static.size();
+  ang_bias_z /= imu_static.size();
 
-    std::cout << "acc_bias_x: " << acc_bias_x << std::endl;
-    std::cout << "acc_bias_y: " << acc_bias_y << std::endl;
-    std::cout << "acc_bias_z: " << acc_bias_z << std::endl;
-    std::cout << "ang_bias_x: " << ang_bias_x << std::endl;
-    std::cout << "ang_bias_y: " << ang_bias_y << std::endl;
-    std::cout << "ang_bias_z: " << ang_bias_z << std::endl;
+  acc_bias_z -= 9.81;
 
-    for (auto imu_data: imu_rotation_positive_z){
-        positive_rot_count += 1;
-        ang_rot_x_mean_positive += imu_data.angular_velocity.x;
-        ang_rot_y_mean_positive += imu_data.angular_velocity.y;
-        ang_rot_z_mean_positive += imu_data.angular_velocity.z;
-    }
-    ang_rot_x_mean_positive = ang_rot_x_mean_positive / imu_rotation_positive_z.size() - ang_bias_x;
-    ang_rot_y_mean_positive = ang_rot_y_mean_positive / imu_rotation_positive_z.size() - ang_bias_y;
-    ang_rot_z_mean_positive = ang_rot_z_mean_positive / imu_rotation_positive_z.size() - ang_bias_z;
+  std::cout << "acc_bias_x: " << acc_bias_x << std::endl;
+  std::cout << "acc_bias_y: " << acc_bias_y << std::endl;
+  std::cout << "acc_bias_z: " << acc_bias_z << std::endl;
+  std::cout << "ang_bias_x: " << ang_bias_x << std::endl;
+  std::cout << "ang_bias_y: " << ang_bias_y << std::endl;
+  std::cout << "ang_bias_z: " << ang_bias_z << std::endl;
 
-    double positive_comp_x = -ang_rot_x_mean_positive / ang_rot_z_mean_positive;
-    double positive_comp_y = -ang_rot_y_mean_positive / ang_rot_z_mean_positive;
-    std::cout << "positive_comp_x: " << positive_comp_x << std::endl;
-    std::cout << "positive_comp_y: " << positive_comp_y << std::endl;
-    
-    ang_z2x_proj = positive_comp_x;
-    ang_z2y_proj = positive_comp_y;
+  for (auto imu_data : imu_rotation_positive_z) {
+    positive_rot_count += 1;
+    ang_rot_x_mean_positive += imu_data.angular_velocity.x;
+    ang_rot_y_mean_positive += imu_data.angular_velocity.y;
+    ang_rot_z_mean_positive += imu_data.angular_velocity.z;
+  }
+  ang_rot_x_mean_positive = ang_rot_x_mean_positive / imu_rotation_positive_z.size() - ang_bias_x;
+  ang_rot_y_mean_positive = ang_rot_y_mean_positive / imu_rotation_positive_z.size() - ang_bias_y;
+  ang_rot_z_mean_positive = ang_rot_z_mean_positive / imu_rotation_positive_z.size() - ang_bias_z;
+
+  double positive_comp_x = -ang_rot_x_mean_positive / ang_rot_z_mean_positive;
+  double positive_comp_y = -ang_rot_y_mean_positive / ang_rot_z_mean_positive;
+  std::cout << "positive_comp_x: " << positive_comp_x << std::endl;
+  std::cout << "positive_comp_y: " << positive_comp_y << std::endl;
+
+  ang_z2x_proj = positive_comp_x;
+  ang_z2y_proj = positive_comp_y;
 }
 
 /**
@@ -151,112 +153,110 @@ void estimate_bias(){
  * 2-15: purely static for calibrating bias (1), start collecting data from 5s
  * 15-35: z-axis at rotation_speed_rps (default about 40 deg/s) (2)
  * 35: StopMove, write file and exit (the loop breaks after writing)
- * exit 
+ * exit
 */
-int main(int argc, char** argv)
+int main(int argc, char ** argv)
 {
-    rclcpp::init(argc, argv);
-    auto nh = rclcpp::Node::make_shared("calibrate_imu");
+  rclcpp::init(argc, argv);
+  auto nh = rclcpp::Node::make_shared("calibrate_imu");
 
-    const double ang_vel = nh->declare_parameter<double>("rotation_speed_rps", 0.7);
-    if (!std::isfinite(ang_vel) || ang_vel <= 0.0 || ang_vel > 1.396) {
-        RCLCPP_ERROR(nh->get_logger(), "rotation_speed_rps must be finite and in (0, 1.396] rad/s");
-        rclcpp::shutdown();
-        return 1;
-    }
-    RCLCPP_INFO(nh->get_logger(), "Calibration rotation: %.3f rad/s (%.1f deg/s), from 15 to 35 seconds", ang_vel, ang_vel * 180.0 / 3.141592653589793);
+  const double ang_vel = nh->declare_parameter<double>("rotation_speed_rps", 0.7);
+  if (!std::isfinite(ang_vel) || ang_vel <= 0.0 || ang_vel > 1.396) {
+    RCLCPP_ERROR(nh->get_logger(), "rotation_speed_rps must be finite and in (0, 1.396] rad/s");
+    rclcpp::shutdown();
+    return 1;
+  }
+  RCLCPP_INFO(nh->get_logger(),
+    "Calibration rotation: %.3f rad/s (%.1f deg/s), from 15 to 35 seconds", ang_vel,
+    ang_vel * 180.0 / 3.141592653589793);
 
-    auto pubGo2Request = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
-    auto pubSpeed = nh->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel", 5); // Debug purpose
+  auto pubGo2Request = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
+  // Debug publisher.
+  auto pubSpeed = nh->create_publisher<geometry_msgs::msg::TwistStamped>("/cmd_vel", 5);
 
     // A sensor-data subscriber matches both reliable and best-effort IMU sources.
-    auto subImu = nh->create_subscription<sensor_msgs::msg::Imu>("/utlidar/imu", rclcpp::SensorDataQoS().keep_last(300), imu_handler);
+  auto subImu = nh->create_subscription<sensor_msgs::msg::Imu>("/utlidar/imu",
+    rclcpp::SensorDataQoS().keep_last(300), imu_handler);
 
-    geometry_msgs::msg::TwistStamped cmd_vel;
-    cmd_vel.header.frame_id = "vehicle";
+  geometry_msgs::msg::TwistStamped cmd_vel;
+  cmd_vel.header.frame_id = "vehicle";
 
-    rclcpp::Rate rate(100);
-    bool status = rclcpp::ok();
-    auto beginning = std::chrono::system_clock::now();
+  rclcpp::Rate rate(100);
+  bool status = rclcpp::ok();
+  auto beginning = std::chrono::system_clock::now();
 
-    unitree_api::msg::Request req;
-    SportClient sport_req;
+  unitree_api::msg::Request req;
+  SportClient sport_req;
 
-    bool file_written = false;
-    
-    while (status){
-    	rclcpp::spin_some(nh);
-    	
-        auto current = std::chrono::system_clock::now();
-        auto seconds = std::chrono::duration_cast<std::chrono::seconds>(current - beginning).count();
+  bool file_written = false;
 
-        if (seconds < 2){
-            cmd_vel.twist.linear.x = 0;
-            cmd_vel.twist.linear.y = 0;
-            cmd_vel.twist.angular.z = 0;
-            pubSpeed->publish(cmd_vel);
+  while (status) {
+    rclcpp::spin_some(nh);
 
-            sport_req.Move(req, 0, 0, 0);
-            pubGo2Request->publish(req);
-            
-            state = 0;
-        }
-        else if (seconds >= 2 && seconds <15){
-            cmd_vel.twist.linear.x = 0;
-            cmd_vel.twist.linear.y = 0;
-            cmd_vel.twist.angular.z = 0;
-            pubSpeed->publish(cmd_vel);
+    auto current = std::chrono::system_clock::now();
+    auto seconds = std::chrono::duration_cast<std::chrono::seconds>(current - beginning).count();
 
-            sport_req.StopMove(req);
-            pubGo2Request->publish(req);
+    if (seconds < 2) {
+      cmd_vel.twist.linear.x = 0;
+      cmd_vel.twist.linear.y = 0;
+      cmd_vel.twist.angular.z = 0;
+      pubSpeed->publish(cmd_vel);
 
-            if (seconds >= 5){
-                state = 1;
-            }
-        }
-        else if (seconds >= 15 && seconds < 35){
-            cmd_vel.twist.linear.x = 0;
-            cmd_vel.twist.linear.y = 0;
-            cmd_vel.twist.angular.z = ang_vel;
-            pubSpeed->publish(cmd_vel);
+      sport_req.Move(req, 0, 0, 0);
+      pubGo2Request->publish(req);
 
-            sport_req.Move(req, cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z);
-            pubGo2Request->publish(req);
+      state = 0;
+    } else if (seconds >= 2 && seconds < 15) {
+      cmd_vel.twist.linear.x = 0;
+      cmd_vel.twist.linear.y = 0;
+      cmd_vel.twist.angular.z = 0;
+      pubSpeed->publish(cmd_vel);
 
-            state = 2;
-        }
-        else if (seconds >= 35 && seconds < 37){
-            cmd_vel.twist.linear.x = 0;
-            cmd_vel.twist.linear.y = 0;
-            cmd_vel.twist.angular.z = 0;
-            pubSpeed->publish(cmd_vel);
+      sport_req.StopMove(req);
+      pubGo2Request->publish(req);
 
-            sport_req.StopMove(req);
-            pubGo2Request->publish(req);
+      if (seconds >= 5) {
+        state = 1;
+      }
+    } else if (seconds >= 15 && seconds < 35) {
+      cmd_vel.twist.linear.x = 0;
+      cmd_vel.twist.linear.y = 0;
+      cmd_vel.twist.angular.z = ang_vel;
+      pubSpeed->publish(cmd_vel);
 
-            state = 3;
-        }
+      sport_req.Move(req, cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z);
+      pubGo2Request->publish(req);
 
-        if (state == 0){
-            std::cout << "Adjusting the robot to the initial position..." << std::endl;
-        }
-        else if (state == 1){
-            std::cout << "Collecting static data..." << std::endl;
-        }
-        else if (state == 2){
-            std::cout << "Collecting positive z-axis rotation data..." << std::endl;
-        }
-        else if (state == 3){
-            std::cout << "Writing to file..." << std::endl;
-        }
-        if (state == 3 && !file_written){
-            estimate_bias();
-            serialize_to_file();
-            file_written = true;
-            std::cout << "Calibration finished!" << std::endl;
-            break;
-        }
-        status = rclcpp::ok();
-        rate.sleep();
+      state = 2;
+    } else if (seconds >= 35 && seconds < 37) {
+      cmd_vel.twist.linear.x = 0;
+      cmd_vel.twist.linear.y = 0;
+      cmd_vel.twist.angular.z = 0;
+      pubSpeed->publish(cmd_vel);
+
+      sport_req.StopMove(req);
+      pubGo2Request->publish(req);
+
+      state = 3;
     }
+
+    if (state == 0) {
+      std::cout << "Adjusting the robot to the initial position..." << std::endl;
+    } else if (state == 1) {
+      std::cout << "Collecting static data..." << std::endl;
+    } else if (state == 2) {
+      std::cout << "Collecting positive z-axis rotation data..." << std::endl;
+    } else if (state == 3) {
+      std::cout << "Writing to file..." << std::endl;
+    }
+    if (state == 3 && !file_written) {
+      estimate_bias();
+      serialize_to_file();
+      file_written = true;
+      std::cout << "Calibration finished!" << std::endl;
+      break;
+    }
+    status = rclcpp::ok();
+    rate.sleep();
+  }
 }

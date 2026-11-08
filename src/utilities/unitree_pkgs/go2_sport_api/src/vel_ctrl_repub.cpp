@@ -1,5 +1,6 @@
-#include "rclcpp/rclcpp.hpp"
 #include <iostream>
+
+#include "rclcpp/rclcpp.hpp"
 
 #include "common/ros2_sport_client.h"
 #include "unitree_api/msg/request.hpp"
@@ -50,12 +51,12 @@ void joystickHandler(const sensor_msgs::msg::Joy::ConstSharedPtr joy)
 
   joySpeedYaw = joy->axes[0] * maxSpeedYaw;
 
-  if (joySpeed > 1.0) joySpeed = 1.0;
-  if (joySpeed < -1.0) joySpeed = -1.0;
-  if (joySpeedLateral > maxSpeedLateral) joySpeedLateral = maxSpeedLateral;
-  if (joySpeedLateral < -maxSpeedLateral) joySpeedLateral = -maxSpeedLateral;
-  
-  if (joy->axes[4] == 0) joySpeed = 0;
+  if (joySpeed > 1.0) {joySpeed = 1.0;}
+  if (joySpeed < -1.0) {joySpeed = -1.0;}
+  if (joySpeedLateral > maxSpeedLateral) {joySpeedLateral = maxSpeedLateral;}
+  if (joySpeedLateral < -maxSpeedLateral) {joySpeedLateral = -maxSpeedLateral;}
+
+  if (joy->axes[4] == 0) {joySpeed = 0;}
 
   if (joy->axes[5] > -0.1) {
     checkObstacle = true;
@@ -68,37 +69,40 @@ void joystickHandler(const sensor_msgs::msg::Joy::ConstSharedPtr joy)
 
 int main(int argc, char **argv)
 {
-    rclcpp::init(argc, argv);                             // Initialize rclcpp
-    rclcpp::TimerBase::SharedPtr timer_;                  // Create a timer callback object to send cmd in time intervals
-    nh = rclcpp::Node::make_shared("vel_cmd_repub"); // Create a ROS2 node and make share with low_level_cmd_sender class
+  rclcpp::init(argc, argv);                               // Initialize rclcpp
+  // Create a timer callback object to send cmd in time intervals
+  rclcpp::TimerBase::SharedPtr timer_;
+  // Create a ROS2 node and make share with low_level_cmd_sender class
+  nh = rclcpp::Node::make_shared("vel_cmd_repub");
 
     // state_suber = nh->create_subscription<unitree_go::msg::SportModeState>("sportmodestate", 10);
-    
-    // vel_cmd_suber = nh->create_subscription<geometry_msgs::msg::TwistStamped>("/cmd_vel", 10, vel_cmd_callback);
 
-    joy_suber = nh->create_subscription<sensor_msgs::msg::Joy>("/joy", 5, joystickHandler);
-    req_puber = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
+    // vel_cmd_suber = nh->create_subscription<geometry_msgs::msg::TwistStamped>("/cmd_vel", 10,
+    // vel_cmd_callback);
 
-    rclcpp::Rate rate(100); // Set the frequency of the timer callback
-    bool status = rclcpp::ok();
-    while (status){
-        rclcpp::spin_some(nh);
-        vx = joySpeed;
-        vyaw = joySpeedYaw;
-        vy = joySpeedLateral;
-        std::cout << "vx: " << vx << ",vy: " << vy << ", vyaw:" << vyaw << std::endl;
-        
-        sport_req.Move(req, vx, vy, vyaw);
-        req_puber->publish(req);
-        
-        //if (new_cmd)
+  joy_suber = nh->create_subscription<sensor_msgs::msg::Joy>("/joy", 5, joystickHandler);
+  req_puber = nh->create_publisher<unitree_api::msg::Request>("/api/sport/request", 10);
+
+  rclcpp::Rate rate(100);   // Set the frequency of the timer callback
+  bool status = rclcpp::ok();
+  while (status) {
+    rclcpp::spin_some(nh);
+    vx = joySpeed;
+    vyaw = joySpeedYaw;
+    vy = joySpeedLateral;
+    std::cout << "vx: " << vx << ",vy: " << vy << ", vyaw:" << vyaw << std::endl;
+
+    sport_req.Move(req, vx, vy, vyaw);
+    req_puber->publish(req);
+
+        // if (new_cmd)
         //{
         //    sport_req.Move(req, vx, 0, vyaw);
         //    req_puber->publish(req);
         //    new_cmd = false;
         //    count_down = 5;
         //}
-        //else
+        // else
         //{
         //    if (count_down > 0){
         //        count_down--;
@@ -110,10 +114,10 @@ int main(int argc, char **argv)
         //        req_puber->publish(req);
         //    }
         // }
-        rate.sleep();
-        status = rclcpp::ok();
-    }
+    rate.sleep();
+    status = rclcpp::ok();
+  }
 
-    rclcpp::shutdown();
-    return 0;
+  rclcpp::shutdown();
+  return 0;
 }

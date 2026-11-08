@@ -1,9 +1,31 @@
-"""Bounded, ROS-independent alignment of a shared LiDAR/IMU clock.
+# Copyright (c) 2026 RubSevian
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+"""
+Bounded, ROS-independent alignment of a shared LiDAR/IMU clock.
 
 One-way traffic cannot identify absolute transport latency.  The smallest
 observed receive-minus-measurement-end offset is an estimate, with a configured
 margin.  It is frozen before publication so measurement intervals are preserved.
 """
+
 from dataclasses import dataclass
 import math
 
@@ -31,7 +53,8 @@ class AlignmentConfig:
 
 
 class SensorTimeAlignment:
-    """One session, one immutable offset, O(1) state; faults require restart.
+    """
+    One session, one immutable offset, O(1) state; faults require restart.
 
     Callbacks supply receive ROS/monotonic time before processing.  Cloud spans
     cover all original points, including points later removed by self-filtering.
@@ -47,10 +70,10 @@ class SensorTimeAlignment:
         self._last_receive = None
         self._minimum_offset = None
         self._last_source = {}
-        self.seen = dict(cloud=0, imu=0)
-        self.accepted = dict(cloud=0, imu=0)
-        self.dropped = dict(cloud=0, imu=0)
-        self.last_age_ns = dict(cloud=None, imu=None)
+        self.seen = {'cloud': 0, 'imu': 0}
+        self.accepted = {'cloud': 0, 'imu': 0}
+        self.dropped = {'cloud': 0, 'imu': 0}
+        self.last_age_ns = {'cloud': None, 'imu': None}
 
     def _drop(self, stream, reason, fault=False):
         self.dropped[stream] += 1
@@ -66,24 +89,35 @@ class SensorTimeAlignment:
             raise ValueError('Unknown sensor stream: ' + str(stream))
         if self.state == 'FAULT':
             return self._drop(stream, self.reason)
-        if (any(type(v) is not int for v in (source_ns, receive_ros_ns, receive_mono_ns, span_ns))
-                or source_ns <= 0 or receive_ros_ns <= 0 or receive_mono_ns < 0
-                or span_ns < 0 or (stream == 'imu' and span_ns != 0)
-                or span_ns > self.config.max_scan_duration_s * 1e9):
+        if (
+            any(type(v) is not int for v in (source_ns, receive_ros_ns, receive_mono_ns, span_ns))
+            or source_ns <= 0
+            or receive_ros_ns <= 0
+            or receive_mono_ns < 0
+            or span_ns < 0
+            or (stream == 'imu' and span_ns != 0)
+            or span_ns > self.config.max_scan_duration_s * 1e9
+        ):
             return self._drop(stream, 'invalid_measurement_time')
 
         if self._last_receive is not None:
             old_ros, old_mono = self._last_receive
-            if (receive_mono_ns < old_mono or
-                    abs((receive_ros_ns - old_ros) - (receive_mono_ns - old_mono))
-                    > self.config.clock_jump_s * 1e9):
+            if (
+                receive_mono_ns < old_mono
+                or abs((receive_ros_ns - old_ros) - (receive_mono_ns - old_mono))
+                > self.config.clock_jump_s * 1e9
+            ):
                 return self._drop(stream, 'host_clock_jump', fault=True)
         self._last_receive = (receive_ros_ns, receive_mono_ns)
         previous = self._last_source.get(stream)
         if previous is not None and source_ns <= previous:
-            return self._drop(stream, 'sensor_clock_reset' if previous - source_ns > self.config.max_age_s * 1e9
-                              else 'duplicate_or_out_of_order',
-                              fault=previous - source_ns > self.config.max_age_s * 1e9)
+            return self._drop(
+                stream,
+                'sensor_clock_reset'
+                if previous - source_ns > self.config.max_age_s * 1e9
+                else 'duplicate_or_out_of_order',
+                fault=previous - source_ns > self.config.max_age_s * 1e9,
+            )
         self._last_source[stream] = source_ns
         self.seen[stream] += 1
 
@@ -91,10 +125,14 @@ class SensorTimeAlignment:
             if self._first_mono is None:
                 self._first_mono = receive_mono_ns
             candidate = receive_ros_ns - source_ns - span_ns
-            self._minimum_offset = candidate if self._minimum_offset is None else min(self._minimum_offset, candidate)
-            if (receive_mono_ns - self._first_mono < self.config.warmup_s * 1e9
-                    or self.seen['cloud'] < self.config.min_cloud_samples
-                    or self.seen['imu'] < self.config.min_imu_samples):
+            self._minimum_offset = (
+                candidate if self._minimum_offset is None else min(self._minimum_offset, candidate)
+            )
+            if (
+                receive_mono_ns - self._first_mono < self.config.warmup_s * 1e9
+                or self.seen['cloud'] < self.config.min_cloud_samples
+                or self.seen['imu'] < self.config.min_imu_samples
+            ):
                 return self._drop(stream, 'collecting_clock_samples')
             self.offset_ns = self._minimum_offset - round(self.config.margin_s * 1e9)
             self.state = 'LOCKED'
@@ -111,8 +149,16 @@ class SensorTimeAlignment:
         return mapped
 
     def status(self):
-        """A small snapshot, without retaining messages or per-sample history."""
-        return dict(state=self.state, reason=self.reason, offset_ns=self.offset_ns,
-                    seen=dict(self.seen), accepted=dict(self.accepted), dropped=dict(self.dropped),
-                    last_age_s={k: v / 1e9 if v is not None else None for k, v in self.last_age_ns.items()},
-                    absolute_transport_latency_known=False)
+        """Return a small snapshot without retaining messages or per-sample history."""
+        return {
+            'state': self.state,
+            'reason': self.reason,
+            'offset_ns': self.offset_ns,
+            'seen': dict(self.seen),
+            'accepted': dict(self.accepted),
+            'dropped': dict(self.dropped),
+            'last_age_s': {
+                k: v / 1e9 if v is not None else None for k, v in self.last_age_ns.items()
+            },
+            'absolute_transport_latency_known': False,
+        }

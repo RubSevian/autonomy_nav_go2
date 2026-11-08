@@ -1,0 +1,14 @@
+The MIT license in LICENSE covers original code and modifications authored by
+RubSevian. It does not replace licenses of third-party code, submodules, assets,
+model weights or SDK binaries. Existing copyright and license notices remain
+in force. Material with unresolved upstream licensing is not relicensed here.
+
+Known unresolved upstream notices in the linted packages:
+- terrain_analysis and terrain_analysis_ext declare BSD in package.xml, but
+  their original source files lack complete copyright/license headers.
+- transform_sensors/transform_everything.py, calibrate_imu and go2_sport_api
+  contain upstream code with incomplete license declarations/notices.
+- OSRF test templates retain Apache-2.0; nlohmann headers retain their MIT SPDX
+  notices; the Unitree motor header retains its original copyright notice.
+The MIT headers added to the new transform_sensors modules/tests cover original
+RubSevian files identified by their introduction in this repository's history.

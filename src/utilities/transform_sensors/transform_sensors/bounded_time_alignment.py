@@ -1,16 +1,41 @@
-"""Diagnostic common sensor-time map. No ROS, transport, motion, or file I/O.
+# Copyright (c) 2026 RubSevian
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+"""
+Diagnostic common sensor-time map. No ROS, transport, motion, or file I/O.
 
 One-way envelope tracking is NOT identification of clock frequency/network delay.
 All epochs are integer ns. Rates are integer ppb; updates are continuous hinges
 beyond every previously observed scan end. Uncertain mapping fails closed.
 """
-from bisect import bisect_right
-from collections import Counter, deque
-from dataclasses import dataclass
-from statistics import median
-import math
 
-from transform_sensors.time_alignment import AlignmentConfig, SensorTimeAlignment
+from bisect import bisect_right
+from collections import Counter
+from collections import deque
+from dataclasses import dataclass
+import math
+from statistics import median
+
+from transform_sensors.time_alignment import AlignmentConfig
+from transform_sensors.time_alignment import SensorTimeAlignment
+
 
 def finite_imu_fields(values):
     return all(type(v) in (int, float) and math.isfinite(v) for v in values)
@@ -31,7 +56,7 @@ class BoundedConfig(AlignmentConfig):
     segment_capacity: int = 16
     max_rate_ppm: float = 1000.0
     rate_slew_ppm_s: float = 100.0
-    max_uncertainty_s: float = .005
+    max_uncertainty_s: float = 0.005
     small_future_ns: int = 2000
     max_small_future_drops: int = 3
     envelope_min_cloud_samples: int = 5
@@ -41,8 +66,12 @@ class BoundedConfig(AlignmentConfig):
 
     def __post_init__(self):
         super().__post_init__()
-        for key in ('envelope_min_cloud_samples', 'envelope_min_imu_samples', 'max_skipped_envelope_windows',
-                    'max_out_of_bound_rate_windows'):
+        for key in (
+            'envelope_min_cloud_samples',
+            'envelope_min_imu_samples',
+            'max_skipped_envelope_windows',
+            'max_out_of_bound_rate_windows',
+        ):
             if type(getattr(self, key)) is not int or getattr(self, key) < 1:
                 raise ValueError(key)
         if self.max_skipped_envelope_windows > 2 or self.max_out_of_bound_rate_windows > 2:
@@ -51,45 +80,60 @@ class BoundedConfig(AlignmentConfig):
             v = getattr(self, key)
             if type(v) not in (int, float) or not math.isfinite(v) or v <= 0:
                 raise ValueError(key)
-        for key in ('envelope_history', 'segment_capacity', 'small_future_ns', 'max_small_future_drops'):
+        for key in (
+            'envelope_history',
+            'segment_capacity',
+            'small_future_ns',
+            'max_small_future_drops',
+        ):
             if type(getattr(self, key)) is not int or getattr(self, key) < 1:
                 raise ValueError(key)
         # Hard diagnostic bounds prevent configuration from bypassing guards.
-        if (not 4 <= self.envelope_history <= 16 or not 8 <= self.segment_capacity <= 32
-                or not .5 <= self.envelope_window_s <= 2 or self.max_rate_ppm > 2000
-                or self.rate_slew_ppm_s > 100 or self.small_future_ns > 2000
-                or self.max_small_future_drops > 3 or self.max_uncertainty_s > .02
-                or self.max_age_s != .5 or self.clock_jump_s > .1
-                or self.max_scan_duration_s > .2 or self.margin_s != .02):
+        if (
+            not 4 <= self.envelope_history <= 16
+            or not 8 <= self.segment_capacity <= 32
+            or not 0.5 <= self.envelope_window_s <= 2
+            or self.max_rate_ppm > 2000
+            or self.rate_slew_ppm_s > 100
+            or self.small_future_ns > 2000
+            or self.max_small_future_drops > 3
+            or self.max_uncertainty_s > 0.02
+            or self.max_age_s != 0.5
+            or self.clock_jump_s > 0.1
+            or self.max_scan_duration_s > 0.2
+            or self.margin_s != 0.02
+        ):
             raise ValueError('outside bounded diagnostic contract')
 
 
 class BoundedTimeAlignment(SensorTimeAlignment):
-    """Latched DEGRADED/FAULT require restart; no automatic mission rearm.
+    """
+    Latched DEGRADED/FAULT require restart; no automatic mission rearm.
 
     Single small-future samples are dropped, never published/clamped. 2 us is
     an explicit quantization hypothesis covering 847 ns, not clock-error grace.
     It is verified/recorded separately from the unchanged 500 ms stale limit.
     """
+
     def __init__(self, config=BoundedConfig()):
         super().__init__(config)
         self._segments = deque(maxlen=config.segment_capacity)  # (source, mapped, ppb)
         self._envelopes = deque(maxlen=config.envelope_history)
         self._window_start = None
         self._window_min = None
-        self._window_counts = dict(cloud=0, imu=0)
+        self._window_counts = {'cloud': 0, 'imu': 0}
         self._window_history = deque(maxlen=config.envelope_history)
         self._high_source = 0
         self._last_mapped = {}
         self._last_arrival = {}
         self._last_source_receive = {}
-        self._small_future_run = dict(cloud=0, imu=0)
+        self._small_future_run = {'cloud': 0, 'imu': 0}
         self.rate_ppb = 0
         self.uncertainty_ns = 0
         self.model_updates = 0
         self.reject_reasons = Counter()
         self.failure_reason = ''
-        self.last_end_residual_ns = dict(cloud=None, imu=None)
+        self.last_end_residual_ns = {'cloud': None, 'imu': None}
         self._ever_locked = False
         self.skipped_envelope_windows = 0
         self.consecutive_skipped_windows = 0
@@ -112,8 +156,10 @@ class BoundedTimeAlignment(SensorTimeAlignment):
 
     def check_health(self, now_mono_ns):
         if self._ever_locked and self.state == 'LOCKED':
-            if any(now_mono_ns - self._last_arrival.get(s, -NS) > round(self.config.max_age_s * NS)
-                   for s in ('imu', 'cloud')):
+            if any(
+                now_mono_ns - self._last_arrival.get(s, -NS) > round(self.config.max_age_s * NS)
+                for s in ('imu', 'cloud')
+            ):
                 self._degrade('sensor_dropout_restart_required')
         return self.state == 'LOCKED'
 
@@ -130,15 +176,21 @@ class BoundedTimeAlignment(SensorTimeAlignment):
         return value
 
     def map_relative_times(self, source_ns, times_s):
-        """Numpy is used only for cloud points, never epoch * float.
+        """
+        Numpy is used only for cloud points, never epoch * float.
 
         Preserve field dtype/layout in caller. Source-relative times are rounded
         to integer ns; each point receives F(source+t)-F(source), so hinge
         crossings and header/IMU use exactly one model. No in-place input writes.
         """
         import numpy as np
+
         times = np.asarray(times_s)
-        if not np.isfinite(times).all() or (times < 0).any() or (times > self.config.max_scan_duration_s).any():
+        if (
+            not np.isfinite(times).all()
+            or (times < 0).any()
+            or (times > self.config.max_scan_duration_s).any()
+        ):
             raise ValueError('invalid point relative time')
         offsets = np.rint(times.astype(np.float64) * NS).astype(np.int64)
         mapped = np.empty(offsets.shape, dtype=np.int64)
@@ -158,7 +210,9 @@ class BoundedTimeAlignment(SensorTimeAlignment):
             delta = offsets[mask] + (source_ns - anchor)
             # Split before multiply to keep int64 intermediates bounded.
             n = (delta % NS) * ppb
-            corr = (delta // NS) * ppb + np.where(n >= 0, (n + NS // 2) // NS, -((-n + NS // 2) // NS))
+            corr = (delta // NS) * ppb + np.where(
+                n >= 0, (n + NS // 2) // NS, -((-n + NS // 2) // NS)
+            )
             mapped[mask] = value - base + delta + corr
         return mapped.astype(np.float64) / NS
 
@@ -166,15 +220,23 @@ class BoundedTimeAlignment(SensorTimeAlignment):
         if self._window_start is None:
             self._window_start = receive_mono
         if receive_mono - self._window_start >= round(self.config.envelope_window_s * NS):
-            required = dict(cloud=self.config.envelope_min_cloud_samples,
-                            imu=self.config.envelope_min_imu_samples)
-            sufficient = self._window_min is not None and all(self._window_counts[s] >= n for s, n in required.items())
-            self._window_history.append(dict(start_mono_ns=self._window_start,
-                                             end_mono_ns=receive_mono,
-                                             counts=dict(self._window_counts),
-                                             required_counts=required,
-                                             sufficient=sufficient,
-                                             closing_stream=stream))
+            required = {
+                'cloud': self.config.envelope_min_cloud_samples,
+                'imu': self.config.envelope_min_imu_samples,
+            }
+            sufficient = self._window_min is not None and all(
+                self._window_counts[s] >= n for s, n in required.items()
+            )
+            self._window_history.append(
+                {
+                    'start_mono_ns': self._window_start,
+                    'end_mono_ns': receive_mono,
+                    'counts': dict(self._window_counts),
+                    'required_counts': required,
+                    'sufficient': sufficient,
+                    'closing_stream': stream,
+                }
+            )
             if sufficient:
                 self.consecutive_skipped_windows = 0
                 self._last_complete_envelope_mono = receive_mono
@@ -191,7 +253,7 @@ class BoundedTimeAlignment(SensorTimeAlignment):
                     self._degrade('insufficient_common_envelope_samples')
             self._window_start = receive_mono
             self._window_min = None
-            self._window_counts = dict(cloud=0, imu=0)
+            self._window_counts = {'cloud': 0, 'imu': 0}
         # Half-open receive-time windows: the boundary sample belongs to the
         # new window, together with its envelope minimum. Counting it before
         # closure credits the wrong stream to the old window and then loses it.
@@ -203,9 +265,12 @@ class BoundedTimeAlignment(SensorTimeAlignment):
 
     def _update_model(self):
         points = list(self._envelopes)
-        slopes = [div_round((b[1] - a[1]) * NS, b[0] - a[0])
-                  for i, a in enumerate(points) for b in points[i + 1:]
-                  if b[0] - a[0] >= NS // 2]
+        slopes = [
+            div_round((b[1] - a[1]) * NS, b[0] - a[0])
+            for i, a in enumerate(points)
+            for b in points[i + 1:]
+            if b[0] - a[0] >= NS // 2
+        ]
         if not slopes:
             self._degrade('envelope_not_observable')
             return
@@ -222,10 +287,13 @@ class BoundedTimeAlignment(SensorTimeAlignment):
             bounded = max(-bound, min(bound, estimate))
             ref_source, ref_q = points[-1]
             self.last_bounded_fit_error_ns = max(
-                abs((q - ref_q) - div_round((x - ref_source) * bounded, NS))
-                for x, q in points)
-            if (self.consecutive_out_of_bound_rate_windows > self.config.max_out_of_bound_rate_windows
-                    or self.last_bounded_fit_error_ns > round(self.config.max_uncertainty_s * NS)):
+                abs((q - ref_q) - div_round((x - ref_source) * bounded, NS)) for x, q in points
+            )
+            if (
+                self.consecutive_out_of_bound_rate_windows
+                > self.config.max_out_of_bound_rate_windows
+                or self.last_bounded_fit_error_ns > round(self.config.max_uncertainty_s * NS)
+            ):
                 self._degrade('estimated_rate_outside_bound')
                 return
             estimate = bounded
@@ -233,14 +301,24 @@ class BoundedTimeAlignment(SensorTimeAlignment):
             self.consecutive_out_of_bound_rate_windows = 0
             self.last_bounded_fit_error_ns = None
         ref_source, ref_q = points[-1]
-        errors = sorted(abs((q - ref_q) - div_round((x - ref_source) * estimate, NS)) for x, q in points)
-        self.uncertainty_ns = max(errors) if self.consecutive_out_of_bound_rate_windows else errors[(len(errors) - 1) * 3 // 4]
+        errors = sorted(
+            abs((q - ref_q) - div_round((x - ref_source) * estimate, NS)) for x, q in points
+        )
+        self.uncertainty_ns = (
+            max(errors)
+            if self.consecutive_out_of_bound_rate_windows
+            else errors[(len(errors) - 1) * 3 // 4]
+        )
         if self.uncertainty_ns > round(self.config.max_uncertainty_s * NS):
             self._degrade('envelope_uncertainty_exceeded')
             return
         anchor = self._high_source + 1  # beyond all previous scan ends and IMUs
         mapped_anchor = self.map_time(anchor)
-        target = ref_q + div_round((anchor - ref_source) * estimate, NS) - round(self.config.margin_s * NS)
+        target = (
+            ref_q
+            + div_round((anchor - ref_source) * estimate, NS)
+            - round(self.config.margin_s * NS)
+        )
         current = mapped_anchor - anchor
         # Bounded phase servo (4 s time constant), not per-packet receipt clamp.
         phase_ppb = div_round((target - current) * NS, 4 * NS)
@@ -257,27 +335,40 @@ class BoundedTimeAlignment(SensorTimeAlignment):
             raise ValueError('unknown stream')
         if self.state in ('FAULT', 'DEGRADED'):
             return self._drop(stream, self.failure_reason or self.reason)
-        if (any(type(v) is not int for v in (source_ns, receive_ros_ns, receive_mono_ns, span_ns))
-                or not 0 < source_ns <= I64_MAX - max(0, span_ns)
-                or not 0 < receive_ros_ns <= I64_MAX or receive_mono_ns < 0
-                or span_ns < 0 or span_ns > round(self.config.max_scan_duration_s * NS)
-                or (stream == 'imu' and span_ns)):
+        if (
+            any(type(v) is not int for v in (source_ns, receive_ros_ns, receive_mono_ns, span_ns))
+            or not 0 < source_ns <= I64_MAX - max(0, span_ns)
+            or not 0 < receive_ros_ns <= I64_MAX
+            or receive_mono_ns < 0
+            or span_ns < 0
+            or span_ns > round(self.config.max_scan_duration_s * NS)
+            or (stream == 'imu' and span_ns)
+        ):
             return self._drop(stream, 'invalid_measurement_time')
         if self._last_receive is not None:
             ros, mono = self._last_receive
-            if receive_mono_ns < mono or abs((receive_ros_ns - ros) - (receive_mono_ns - mono)) > round(self.config.clock_jump_s * NS):
+            if receive_mono_ns < mono or abs(
+                (receive_ros_ns - ros) - (receive_mono_ns - mono)
+            ) > round(self.config.clock_jump_s * NS):
                 return self._drop(stream, 'host_clock_jump', fault=True)
         self._last_receive = receive_ros_ns, receive_mono_ns
         previous = self._last_source.get(stream)
         if previous is not None and source_ns <= previous:
-            return self._drop(stream, 'sensor_clock_reset' if previous - source_ns > round(self.config.max_age_s * NS)
-                              else 'duplicate_or_out_of_order', fault=previous - source_ns > round(self.config.max_age_s * NS))
+            return self._drop(
+                stream,
+                'sensor_clock_reset'
+                if previous - source_ns > round(self.config.max_age_s * NS)
+                else 'duplicate_or_out_of_order',
+                fault=previous - source_ns > round(self.config.max_age_s * NS),
+            )
         # A cloud is delivered after its final point. Compare that endpoint
         # against arrivals; varying scan duration must not look like a clock jump.
         # IMU span is validated as zero above, preserving its original check.
         source_end_ns = source_ns + span_ns
         pair = self._last_source_receive.get(stream)
-        if pair is not None and source_end_ns - pair[0] - (receive_mono_ns - pair[1]) > round(self.config.clock_jump_s * NS):
+        if pair is not None and source_end_ns - pair[0] - (receive_mono_ns - pair[1]) > round(
+            self.config.clock_jump_s * NS
+        ):
             return self._drop(stream, 'sensor_clock_forward_jump', fault=True)
         if self._ever_locked:
             self.check_health(receive_mono_ns)
@@ -291,9 +382,14 @@ class BoundedTimeAlignment(SensorTimeAlignment):
             if self._first_mono is None:
                 self._first_mono = receive_mono_ns
             q = receive_ros_ns - source_ns - span_ns
-            self._minimum_offset = q if self._minimum_offset is None else min(q, self._minimum_offset)
-            if (receive_mono_ns - self._first_mono < round(self.config.warmup_s * NS)
-                    or self.seen['cloud'] < self.config.min_cloud_samples or self.seen['imu'] < self.config.min_imu_samples):
+            self._minimum_offset = (
+                q if self._minimum_offset is None else min(q, self._minimum_offset)
+            )
+            if (
+                receive_mono_ns - self._first_mono < round(self.config.warmup_s * NS)
+                or self.seen['cloud'] < self.config.min_cloud_samples
+                or self.seen['imu'] < self.config.min_imu_samples
+            ):
                 return self._drop(stream, 'collecting_clock_samples')
             self.offset_ns = self._minimum_offset - round(self.config.margin_s * NS)
             self._segments.append((source_ns - NS, source_ns - NS + self.offset_ns, 0))
@@ -303,11 +399,11 @@ class BoundedTimeAlignment(SensorTimeAlignment):
         if self.consecutive_skipped_windows:
             # Bound extrapolation while holding the last model. Source and
             # held-map rates may differ by twice the permitted rate bound.
-            held_s=(receive_mono_ns-self._last_complete_envelope_mono)/NS
-            uncertainty=self.uncertainty_ns/NS+held_s*2*self.config.max_rate_ppm/1e6
-            if uncertainty>self.config.max_uncertainty_s:
+            held_s = (receive_mono_ns - self._last_complete_envelope_mono) / NS
+            uncertainty = self.uncertainty_ns / NS + held_s * 2 * self.config.max_rate_ppm / 1e6
+            if uncertainty > self.config.max_uncertainty_s:
                 self._degrade('held_clock_uncertainty_exceeded')
-                return self._drop(stream,self.failure_reason)
+                return self._drop(stream, self.failure_reason)
         try:
             mapped = self.map_time(source_ns)
             end = self.map_time(source_ns + span_ns)
@@ -345,19 +441,27 @@ class BoundedTimeAlignment(SensorTimeAlignment):
 
     def status(self):
         result = super().status()
-        result.update(variant='bounded_common_v1', rate_ppb=self.rate_ppb,
-                      uncertainty_ns=self.uncertainty_ns, model_updates=self.model_updates,
-                      segment_count=len(self._segments), envelope_count=len(self._envelopes),
-                      reject_reasons=dict(self.reject_reasons), failure_reason=self.failure_reason,
-                      last_end_residual_ns=dict(self.last_end_residual_ns),
-                      envelope_window_counts=dict(self._window_counts),
-                      envelope_window_history=list(self._window_history),
-                      skipped_envelope_windows=self.skipped_envelope_windows,
-                      consecutive_skipped_windows=self.consecutive_skipped_windows,
-                      consecutive_out_of_bound_rate_windows=self.consecutive_out_of_bound_rate_windows,
-                      last_rate_estimate_ppb=self.last_rate_estimate_ppb,
-                      last_bounded_fit_error_ns=self.last_bounded_fit_error_ns,
-                      envelope_counting='half_open_receive_time_v2',
-                      mapping_valid=self.state == 'LOCKED', restart_required=self.state in ('DEGRADED', 'FAULT'),
-                      motion_authorized=False, clock_rate_identified=False)
+        result.update(
+            variant='bounded_common_v1',
+            rate_ppb=self.rate_ppb,
+            uncertainty_ns=self.uncertainty_ns,
+            model_updates=self.model_updates,
+            segment_count=len(self._segments),
+            envelope_count=len(self._envelopes),
+            reject_reasons=dict(self.reject_reasons),
+            failure_reason=self.failure_reason,
+            last_end_residual_ns=dict(self.last_end_residual_ns),
+            envelope_window_counts=dict(self._window_counts),
+            envelope_window_history=list(self._window_history),
+            skipped_envelope_windows=self.skipped_envelope_windows,
+            consecutive_skipped_windows=self.consecutive_skipped_windows,
+            consecutive_out_of_bound_rate_windows=self.consecutive_out_of_bound_rate_windows,
+            last_rate_estimate_ppb=self.last_rate_estimate_ppb,
+            last_bounded_fit_error_ns=self.last_bounded_fit_error_ns,
+            envelope_counting='half_open_receive_time_v2',
+            mapping_valid=self.state == 'LOCKED',
+            restart_required=self.state in ('DEGRADED', 'FAULT'),
+            motion_authorized=False,
+            clock_rate_identified=False,
+        )
         return result

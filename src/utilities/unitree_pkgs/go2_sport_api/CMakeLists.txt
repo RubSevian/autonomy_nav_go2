@@ -19,7 +19,7 @@ endif()
 include_directories(include include/common include/nlohmann)
 link_directories(src)
 
-set (
+set(
   DEPENDENCY_LIST
   unitree_go
   unitree_api
@@ -66,13 +66,18 @@ ament_export_targets(export_go2_sport_api)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
-  # the following line skips the linter which checks for copyrights
-  # uncomment the line when a copyright and license is not present in all source files
-  #set(ament_cmake_copyright_FOUND TRUE)
-  # the following line skips cpplint (only works in a git repo)
-  # uncomment the line when this package is not in a git repo
-  #set(ament_cmake_cpplint_FOUND TRUE)
+  # Vendored nlohmann headers retain upstream formatting. Keep project sources
+  # in the checks; only the two style tools exclude this third-party subtree.
+  file(GLOB_RECURSE _vendor_json_headers "${CMAKE_CURRENT_SOURCE_DIR}/include/nlohmann/*.hpp")
+  set(ament_cmake_uncrustify_ADDITIONAL_EXCLUDE ${_vendor_json_headers})
+  set(ament_cmake_cpplint_ADDITIONAL_EXCLUDE ${_vendor_json_headers})
   ament_lint_auto_find_test_dependencies()
 endif()
 
 ament_package()
+
+if(BUILD_TESTING AND TEST xmllint)
+  # Resolve the ROS XSD locally, including when CTest has no network access.
+  set_tests_properties(xmllint PROPERTIES
+    ENVIRONMENT "XML_CATALOG_FILES=${CMAKE_CURRENT_SOURCE_DIR}/../../../../tools/lint/catalog.xml")
+endif()
