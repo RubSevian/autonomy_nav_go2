@@ -11,6 +11,7 @@
 #include "scan_handler.h"
 #include "graph_msger.h"
 #include "queued_goal_lifecycle.h"
+#include "goal_approach.h"
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <diagnostic_msgs/msg/diagnostic_status.hpp>
 #include <cstdint>
@@ -105,6 +106,7 @@ private:
     bool goal_received_ = false;
     bool has_goal_original_ = false;
     std::string goal_frame_ = "N/A";
+    GoalApproach goal_approach_;
     Point3D goal_original_;
     Point3D goal_current_;
     Point3D graph_goal_origin_;

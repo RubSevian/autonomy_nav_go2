@@ -46,12 +46,12 @@ int main(int argc, char** argv) {
     assert(planner.PathToGoal(goal, Evaluate(.2441666, 0, 0, 0, 0, 0, .25),
                              path, waypoint, target, failed, reached, free_nav));
     assert(!failed && reached && !planner.GetGoalNodePtr());
-    // A real XY adjustment remains a terminal stop, classified separately.
+    // Reaching B alone must retain A and the graph goal for continued planning.
     planner.UpdateGoal(goal->position);
     goal->position.x = .6f;
     assert(planner.PathToGoal(goal, Evaluate(.6, 0, 0, 0, .6, 0, .25),
                              path, waypoint, target, failed, reached, free_nav));
-    assert(!failed && reached && !planner.GetGoalNodePtr());
+    assert(!failed && !reached && planner.GetGoalNodePtr() == goal);
   }
   rclcpp::shutdown();
 }

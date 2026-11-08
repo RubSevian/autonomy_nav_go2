@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <sstream>
+#include <chrono>
 
 /***************************************************************************************/
 FARMaster::FARMaster()
@@ -79,6 +80,11 @@ void FARMaster::PublishPlannerStatus(const std::string& state, const std::string
   add("navigation_active", navigation_active_ ? "true" : "false");
   add("goal_received", goal_received_ ? "true" : "false");
   add("goal_frame", goal_frame_);
+  add("goal_correction_reason", graph_planner_.GoalCorrectionReason());
+  add("goal_stamp_ns", has_last_requested_goal_ ? std::to_string(
+      rclcpp::Time(last_requested_goal_.header.stamp).nanoseconds()) : "0");
+  add("goal_adjustment_xy", (has_goal_original_ && has_goal_current_) ?
+      std::to_string(std::hypot(goal_current_.x-goal_original_.x,goal_current_.y-goal_original_.y)) : "N/A");
   add("is_odom_init", is_odom_init_ ? "true" : "false");
   add("is_cloud_init", is_cloud_init_ ? "true" : "false");
   add("is_graph_init", is_graph_init_ ? "true" : "false");
@@ -311,6 +317,7 @@ void FARMaster::ResetEnvironmentAndGraph() {
   defer_pending_goal_until_next_main_loop_ = false;
   goal_received_ = false;
   has_last_requested_goal_ = false;
+  goal_approach_.Reset();
   has_goal_original_ = false;
   has_goal_current_ = false;
   has_graph_goal_origin_ = false;
@@ -500,6 +507,21 @@ void FARMaster::PlanningCallBack() {
   goal_current_ = goal_ptr->position;
   has_goal_current_ = true;
   goal_is_in_freespace_ = graph_planner_.IsGoalInFreespace();
+  const double approach_now = std::chrono::duration<double>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  const auto approach = goal_approach_.Update(approach_now, robot_pos_.x,robot_pos_.y,
+      goal_original_.x,goal_original_.y,goal_current_.x,goal_current_.y,gp_params_.converge_dist);
+  using Approach = GoalApproach::Decision;
+  if (approach != Approach::ROUTE && approach != Approach::CONTINUE_ROUTE) {
+    PublishNavigationActive(false);
+    is_planner_running_ = false;
+    const char* reason = approach == Approach::ARRIVAL_HOLD ? "REQUESTED_GOAL_HOLD" :
+        approach == Approach::CORRECTION_REJECTED ? "CORRECTION_REJECTED" :
+        approach == Approach::CORRECTION_WAIT ? "CORRECTION_UNSTABLE" : "ADJUSTED_GOAL_WAIT";
+    PublishPlannerStatus("GOAL_HOLD", reason,
+        "task retained; motion paused while checking original goal or safe continuation");
+    return;
+  }
 
   graph_planner_.UpdateGoalNavNodeConnects(goal_ptr);
   graph_planner_.UpdaetVGraph(graph_manager_.GetNavGraph());
@@ -515,11 +537,9 @@ void FARMaster::PlanningCallBack() {
   bool is_current_free_nav = false;
   bool is_reach_goal = false;
   LogLifecycleTransition("ROUTE_SEARCH_BEGIN", "PLANNING");
-  const auto arrival = has_goal_original_
-      ? FARGoalArrival::Evaluate(robot_pos_.x, robot_pos_.y,
-          goal_original_.x, goal_original_.y, goal_current_.x, goal_current_.y,
-          gp_params_.converge_dist)
-      : FARGoalArrival::State::APPROACHING;
+  // Original-goal arrival is confirmed independently by the bridge. Retain
+  // this task until its explicit cancel; B's broad radius must not reset A.
+  const auto arrival = FARGoalArrival::State::APPROACHING;
   const bool path_found = graph_planner_.PathToGoal(
       goal_ptr, arrival, candidate_path, candidate_nav, current_free_goal, is_planning_fails,
       is_reach_goal, is_current_free_nav);
@@ -617,27 +637,11 @@ void FARMaster::PlanningCallBack() {
         static_cast<unsigned long long>(plan_revision_), reason.c_str(), candidate_path.size());
   }
 
+  // FAR reports route availability. Original-goal success belongs to the
+  // navigation bridge; no adjusted-point arrival may clear this task here.
   auto reach_goal_msg = std_msgs::msg::Bool();
-  // FAR may adjust a requested point to reachable terrain. Reaching that
-  // adjusted point is a stop, but is not success outside the requested XY tolerance.
-  const bool requested_reached = is_reach_goal &&
-      arrival == FARGoalArrival::State::REQUESTED_REACHED;
-  goal_reached_ = requested_reached;
-  reach_goal_msg.data = requested_reached;
+  reach_goal_msg.data = false;
   reach_goal_pub_->publish(reach_goal_msg);
-  if (is_reach_goal) {
-    PublishNavigationActive(false);
-    has_committed_route_ = false;
-    committed_route_.clear();
-    has_last_requested_goal_ = false;
-
-    goal_received_ = false;
-    is_planner_running_ = false;
-    PublishPlannerStatus("NAVIGATION_STOPPED",
-        requested_reached ? "GOAL_REACHED" : "ADJUSTED_GOAL_OUTSIDE_TOLERANCE",
-        requested_reached ? "requested goal reached within XY tolerance" :
-                            "stopped at adjusted goal outside requested XY tolerance", true);
-  }
   plan_timer_.data = 0.0F;
   planning_time_pub_->publish(plan_timer_);
 }
@@ -813,6 +817,17 @@ void FARMaster::LoadROSParams() {
   // print voxel_dim paramter in ROS2
   RCLCPP_INFO(nh_->get_logger(), "voxel_dim: %f", master_params_.voxel_dim);
 
+  goal_approach_.max_adjustment = nh_->declare_parameter<double>("goal_max_adjustment_m", .8);
+  goal_approach_.stable_s = nh_->declare_parameter<double>("goal_correction_stable_s", .4);
+  goal_approach_.stable_distance = nh_->declare_parameter<double>("goal_correction_stable_distance_m", .05);
+  goal_approach_.follower_stop_distance = nh_->declare_parameter<double>("goal_follower_stop_distance_m", .2);
+  goal_approach_.continuation_margin = nh_->declare_parameter<double>("goal_continuation_margin_m", .01);
+  for (double value : {goal_approach_.max_adjustment, goal_approach_.stable_s,
+      goal_approach_.stable_distance, goal_approach_.follower_stop_distance,
+      goal_approach_.continuation_margin}) {
+    if (!std::isfinite(value) || value <= 0.) throw std::invalid_argument("invalid goal approach parameter");
+  }
+
   // Declare map parameters
   nh_->declare_parameter<float>(map_prefix + "/floor_height", 2.0);
   nh_->declare_parameter<float>(map_prefix + "/cell_length", 5.0);
@@ -885,6 +900,8 @@ void FARMaster::LoadROSParams() {
   nh_->declare_parameter<int>(planner_prefix   + "/path_momentum_thred", 5);
   
   nh_->get_parameter(planner_prefix + "/converge_distance", gp_params_.converge_dist);
+  if (goal_approach_.follower_stop_distance+goal_approach_.continuation_margin >= gp_params_.converge_dist)
+    throw std::invalid_argument("goal continuation margin must fit inside arrival tolerance");
   nh_->get_parameter(planner_prefix + "/goal_adjust_radius", gp_params_.adjust_radius);
   nh_->get_parameter(planner_prefix + "/free_counter_thred", gp_params_.free_thred);
   nh_->get_parameter(planner_prefix + "/reach_goal_vote_size", gp_params_.votes_size);
@@ -1182,6 +1199,7 @@ void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
       return;
     }
   }
+  goal_approach_.Reset();
   goal_original_ = goal_p;
   goal_current_ = goal_p;
   has_goal_original_ = true;
@@ -1237,6 +1255,7 @@ void FARMaster::NavigationCancelCallBack(const std_msgs::msg::Empty::SharedPtr) 
   defer_pending_goal_until_next_main_loop_ = false;
   goal_received_ = false;
   has_last_requested_goal_ = false;
+  goal_approach_.Reset();
   has_goal_original_ = false;
   has_goal_current_ = false;
   has_graph_goal_origin_ = false;

@@ -166,7 +166,7 @@ bool GraphPlanner::PathToGoal(const NavNodePtr& goal_ptr,
     }
 
     _goal_p = goal_ptr->position;
-    if (arrival != FARGoalArrival::State::APPROACHING) {
+    if (arrival == FARGoalArrival::State::REQUESTED_REACHED) {
         global_path = {odom_node_ptr_, goal_ptr};
         const auto validation = FARPathValidation::ValidateRoute(global_path);
         last_path_status_ = validation.status;
@@ -287,6 +287,7 @@ bool GraphPlanner::ReEvaluateGoalPosition(const NavNodePtr& goal_ptr,
 {
     if (!FARPathValidation::IsFiniteNode(goal_ptr) ||
         !FARPathValidation::IsFiniteNode(start_ptr)) return false;
+    correction_reason_ = "ORIGINAL_CONNECTION_FREE";
     if (is_use_internav_goal_) return true; // Existing internav goal needs no adjustment.
     if (is_adjust_height && is_global_path_init_ && recorded_path_.size() > 1) { // use path to adjust goal height
         const auto it = recorded_path_.end() - 2;
@@ -328,7 +329,9 @@ bool GraphPlanner::ReEvaluateGoalPosition(const NavNodePtr& goal_ptr,
                 }
             }
         }
+        if (valid_idx == -1) { correction_reason_ = "NO_FREE_CELL"; return false; }
         if (valid_idx != -1 && free_terrain_grid_->InRange(valid_idx)) {
+            correction_reason_ = "GRID_FREE_CELL";
             Point3D new_p = Point3D(free_terrain_grid_->Ind2Pos(valid_idx));
             new_p.z = goal_ptr->position.z;
             const float pred = (goal_ptr->position - ori_pos_height).norm();
@@ -341,6 +344,7 @@ bool GraphPlanner::ReEvaluateGoalPosition(const NavNodePtr& goal_ptr,
         if (FARUtil::IsNodeInLocalRange(goal_ptr)) {
             Point3D current_goal_pos = goal_ptr->position;
             if (ContourGraph::ReprojectPointOutsidePolygons(current_goal_pos, FARUtil::kNearDist)) {
+                correction_reason_ = "POLYGON_REPROJECTION";
                 if (FARUtil::IsDebug) {
                     const float reproject_dist = (current_goal_pos - origin_goal_pos_).norm_flat();
                     RCLCPP_INFO(nh_->get_logger(),"GP: current goal is inside polygon, reproject goal position distance to origin goal: %f.", reproject_dist);

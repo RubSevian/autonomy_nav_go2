@@ -258,6 +258,8 @@ inline void ResetPlannerInternalValues() {
 }
 
 const NavNodePtr& GetGoalNodePtr() const { return goal_node_ptr_;};
+const std::string& GoalCorrectionReason() const { return correction_reason_; }
+std::string correction_reason_ = "NOT_EVALUATED";
 bool IsGoalInFreespace() const { return is_goal_in_freespace_; }
 bool IsTerrainAssociated() const { return is_terrain_associated_; }
 bool IsFreeNavigationGoal() const { return is_free_nav_goal_; }
