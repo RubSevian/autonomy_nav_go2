@@ -88,8 +88,10 @@ class NavigationBridge(Node):
         if self.gate.clock_required:
             self.create_subscription(String, param('time_status_topic', '/utlidar/time_alignment'), self.alignment_status, 1)
         self.goals = GoalTracker(param('goal_tolerance_m', .25), param('goal_dwell_s', .5),
-            far_mode=self.far_route, wait_budget_s=param('goal_wait_budget_s',10.),
+            far_mode=self.far_route, wait_budget_s=param('goal_wait_budget_s',20.),
+            progress_distance_m=param('goal_progress_reset_distance_m',.1),
             settle_position_m=param('goal_settle_position_m',.02),settle_yaw_rad=param('goal_settle_yaw_rad',.05),settle_max_gap_s=self.gate.command_timeout)
+        if self.far_route:self.path_recovery.timeout_s=self.goals.wait_budget_s
         self.stopped_observed=None
         self.tick_period = param('tick_period_s', .02)
         self.status_period = param('status_period_s', .2)
@@ -412,6 +414,7 @@ class NavigationBridge(Node):
             if not valid:
                 self.goals.inside_since = None
                 self.goals.settle_anchor = None
+                self.goals.reset_progress()
             if valid:
                 x, y, _ = pair.vehicle.position
                 qx,qy,qz,qw=pair.vehicle.quaternion
@@ -423,6 +426,10 @@ class NavigationBridge(Node):
                     and self.gate.locomotion_ready and self.gate.localization_ready(now)
                     and (not self.far_route or tf_age<=self.gate.command_timeout),
                     stamp_ns=pair.odom.stamp_ns,measurement_time=now-tf_age,yaw=yaw,stopped_time=stopped)
+                self.goals.observe_progress(x,y,yaw,pair.odom.stamp_ns,now-tf_age,now,
+                    self.gate.output(now) if self.gate.enabled(now) and self.goal_tf_valid
+                    and not self.mission_health.base_locked and self.path_recovery_state!='WAITING_FOR_PATH'
+                    and pair.odom.stamp_ns>self.command_after_ns else None)
                 if self.goals.state == 'SUCCEEDED':
                     self.gate.goal_received = False
                     self.gate.clear_request()
@@ -438,6 +445,7 @@ class NavigationBridge(Node):
                 self.goal_tf_valid = False
                 self.goals.inside_since = None
                 self.goals.settle_anchor = None
+                self.goals.reset_progress()
                 self.gate.observe('tf', False, time.monotonic())
         self.goals.advance(now)
         if self.goals.state=='CONTINUATION_NOT_FOUND' and self.gate.goal_received:
@@ -488,6 +496,8 @@ class NavigationBridge(Node):
                 self.goals.finish('GOAL_UNREACHABLE',now);self.gate.goal_received=False;self.gate.clear_request()
             elif self.path_recovery_state=='INVALIDATE_GOAL':
                 self.goals.finish('AUTHORITY_LOST',now);self.gate.goal_received=False;self.gate.clear_request()
+        if self.far_route:
+            self.goals.path_waiting=(self.path_recovery_state=='WAITING_FOR_PATH' and self.goals.state in ('REQUESTED','ACTIVE'))
         if self.goals.paused and self.gate.goal_received and not (
                 self.gate.locomotion_ready and self.gate.fresh(now,self.gate.locomotion_received,self.gate.sensor_timeout)):
             self.goals.finish('AUTHORITY_LOST',now)

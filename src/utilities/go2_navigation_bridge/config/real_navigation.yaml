@@ -39,13 +39,14 @@ bridge:
   command_timeout_s: 0.25  # Максимальный полный возраст команды, с; верхний контракт R3 0.25.
   sensor_timeout_s: &nav_sensor_timeout_s 1.0  # Общий TTL NAV и корпуса Mission: 1000 мс, согласовано оператором 23.10.2026.
   goal_dwell_s: 0.5  # Подтверждение прибытия; FAR также требует RL_ZERO и устойчивость измеренной позы.
-  goal_wait_budget_s: 10.0 # Общий накопленный бюджет остановок/перепланирования одной задачи, с.
+  goal_wait_budget_s: 20.0 # Бюджет эпизода ожидания; восстанавливается только после измеренного продвижения.
+  goal_progress_reset_distance_m: 0.10 # Продвижение по разрешённому движению для нового бюджета; одна voxel карты.
   goal_settle_position_m: 0.02 # Максимальное смещение от якоря подтверждения прибытия, м.
   goal_settle_yaw_rad: 0.05 # Максимальное изменение yaw от якоря подтверждения, рад.
   tick_period_s: 0.02  # Период envelope readiness/скорости bridge, с; 0.02 = 50 Гц.
   status_period_s: 0.10 # Уточнение оператора 21.10.2026: 100 мс / 10 Гц; Mission status TTL отдельно 600 мс.
   localization_recovery_samples: 5 # Новые последовательные odometry+TF/time samples.
-  path_recovery_timeout_s: 10.0 # Скорость обнуляется сразу; это срок поиска нового пути.
+  path_recovery_timeout_s: 10.0 # Локальный режим: срок восстановления пути. FAR использует goal_wait_budget_s и оставшийся бюджет эпизода.
   tf_timeout_s: 1.0 # Свежесть TF-пары: 1000 мс, как общий sensor_timeout_s.
   tf_check_period_s: 0.02  # Подбор свежей TF/odom пары каждый tick; её возраст ограничен отдельным tf_timeout_s.
   tf_pair_history_s: 1.0  # Временной горизонт odometry/TF, с; не меньше sensor_timeout_s; НЕ продлевает свежесть.

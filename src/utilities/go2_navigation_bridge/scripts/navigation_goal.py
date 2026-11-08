@@ -3,16 +3,19 @@ import math
 
 
 class GoalTracker:
-    def __init__(self, tolerance=.25, dwell_s=.5, *, far_mode=False, wait_budget_s=10., settle_position_m=.02, settle_yaw_rad=.05, settle_max_gap_s=.25):
+    def __init__(self, tolerance=.25, dwell_s=.5, *, far_mode=False, wait_budget_s=20., progress_distance_m=.1, settle_position_m=.02, settle_yaw_rad=.05, settle_max_gap_s=.25):
         if any(not math.isfinite(v) or v <= 0 for v in (tolerance, dwell_s)):
             raise ValueError('Goal tolerance and dwell must be finite and positive')
-        for v in (wait_budget_s, settle_position_m, settle_yaw_rad, settle_max_gap_s):
+        for v in (wait_budget_s, progress_distance_m, settle_position_m, settle_yaw_rad, settle_max_gap_s):
             if type(v) not in (float,int) or not math.isfinite(v) or v<=0:
                 raise ValueError('Goal waiting/settling limits must be finite and positive')
+        if progress_distance_m<=settle_position_m:
+            raise ValueError('Progress rearm distance must exceed settling noise tolerance')
         self.settle_max_gap_s=settle_max_gap_s
         self.last_measurement=None
         self.far_mode=far_mode
         self.wait_budget_s=wait_budget_s
+        self.progress_distance_m=progress_distance_m
         self.settle_position_m=settle_position_m
         self.settle_yaw_rad=settle_yaw_rad
         self.tolerance = tolerance
@@ -32,6 +35,7 @@ class GoalTracker:
         self.far_reason = ''
         self.last_measurement=None
         self.wait_spent=0.
+        self.wait_total=0.;self.progress_resets=0;self.path_waiting=False;self.reset_progress()
         self.wait_updated=None
         self.last_far_stamp=0
         self.last_pose_stamp=0
@@ -55,6 +59,7 @@ class GoalTracker:
         self.state, self.error_xy, self.inside_since = 'REQUESTED', None, None
         self.far_reason = ''
         self.last_measurement=None
+        self.wait_total=0.;self.progress_resets=0;self.path_waiting=False;self.reset_progress()
         self.wait_spent=0.;self.wait_updated=now;self.last_far_stamp=0;self.last_pose_stamp=0
         self.settle_anchor=None;self.hold_since=None;self.adjusted=None;self.correction_reason=''
         return True
@@ -64,11 +69,64 @@ class GoalTracker:
             self.state = 'ACTIVE'
 
     def advance(self, now):
-        if self.wait_updated is not None and self.state in ('REPLANNING','ARRIVAL_CONFIRMING'):
-            self.wait_spent += max(0.,now-self.wait_updated)
+        waiting=self.paused or (self.path_waiting and self.state in ('REQUESTED','ACTIVE'))
+        if waiting:self.progress_sample=None
+        if self.wait_updated is not None and waiting:
+            elapsed=max(0.,now-self.wait_updated)
+            self.wait_spent += elapsed
+            self.wait_total += elapsed
         self.wait_updated=now
-        if self.state in ('REPLANNING','ARRIVAL_CONFIRMING') and self.wait_spent >= self.wait_budget_s:
+        if waiting and self.wait_spent >= self.wait_budget_s:
             self.finish('ARRIVAL_NOT_CONFIRMED' if self.state=='ARRIVAL_CONFIRMING' else 'CONTINUATION_NOT_FOUND',now)
+
+    def reset_progress(self):
+        self.progress_sample=None
+        self.progress_anchor=None
+        self.progress_along=0.
+
+    def observe_progress(self,x,y,yaw,stamp_ns,measurement_time,now,motion):
+        """Rearm waiting only after measured travel along fresh allowed motion.
+
+        The target distance may grow on an obstacle detour. Neither a route
+        revision, rotation, duplicate pose nor idle localization jitter rearms.
+        This uses localization, not independent external ground truth.
+        """
+        if not self.far_mode or self.state not in ('REQUESTED','ACTIVE','REPLANNING','ARRIVAL_CONFIRMING') or self.wait_spent<=0:
+            self.reset_progress();return False
+        if self.state!='ACTIVE' or self.path_waiting or motion is None:
+            self.progress_sample=None;return False
+        if (type(stamp_ns) is not int or stamp_ns<=0 or
+                not all(math.isfinite(v) for v in (x,y,yaw,measurement_time,now)) or
+                not 0<=now-measurement_time<=self.settle_max_gap_s or
+                len(motion)!=3 or not all(math.isfinite(v) for v in motion)):
+            self.reset_progress();return False
+        if math.hypot(motion[0],motion[1])<=1e-6:
+            self.progress_sample=None;return False
+        previous=self.progress_sample
+        if previous is not None and stamp_ns<=previous[0]:
+            if stamp_ns<previous[0] or math.hypot(x-previous[2],y-previous[3])>1e-6:
+                self.reset_progress()
+            return False
+        current=(stamp_ns,measurement_time,x,y,yaw,motion[0],motion[1])
+        if previous is None:
+            self.progress_sample=current
+            if self.progress_anchor is None:self.progress_anchor=(x,y)
+            return False
+        dt=measurement_time-previous[1]
+        dx,dy=x-previous[2],y-previous[3]
+        speed=math.hypot(previous[5],previous[6])
+        # A discontinuous localization jump must not count as robot travel.
+        if not 0<dt<=self.settle_max_gap_s or math.hypot(dx,dy)>2*speed*dt+self.settle_position_m:
+            self.reset_progress();return False
+        ux=(math.cos(previous[4])*previous[5]-math.sin(previous[4])*previous[6])/speed
+        uy=(math.sin(previous[4])*previous[5]+math.cos(previous[4])*previous[6])/speed
+        self.progress_along+=dx*ux+dy*uy
+        self.progress_sample=current
+        net=math.hypot(x-self.progress_anchor[0],y-self.progress_anchor[1])
+        if self.progress_along+1e-9>=self.progress_distance_m and net+1e-9>=self.progress_distance_m:
+            self.wait_spent=0.;self.wait_updated=now;self.progress_resets+=1
+            self.reset_progress();return True
+        return False
 
     @property
     def paused(self):
@@ -182,6 +240,7 @@ class GoalTracker:
 
     def finish(self, state, now):
         self.state, self.finished = state, now
+        self.path_waiting=False;self.reset_progress()
 
     def snapshot(self, now):
         return dict(revision=self.revision, stamp_ns=self.stamp_ns, state=self.state, frame=self.frame,
@@ -190,4 +249,6 @@ class GoalTracker:
                     elapsed_s=None if self.started is None else (self.finished or now)-self.started,
                     far_reason=self.far_reason, adjusted=self.adjusted, correction_reason=self.correction_reason,
                     wait_spent_s=self.wait_spent, wait_budget_s=self.wait_budget_s,
+                    wait_total_s=self.wait_total, waiting_for_path=self.path_waiting, progress_reset_count=self.progress_resets,
+                    progress_reset_distance_m=self.progress_distance_m,
                     arrival_confirmed=self.state=='SUCCEEDED')

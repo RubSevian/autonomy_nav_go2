@@ -15,7 +15,7 @@ def load_profile(path):
         'local': ('search_radius_m', 'path_scale', 'max_speed_mps', 'max_yaw_rate_rps',
                   'max_accel_mps2', 'goal_tolerance_m', 'stop_distance_m', 'slow_distance_m', 'near_goal_distance_m'),
         'bridge': ('vx_limit', 'vy_limit', 'wz_limit', 'command_timeout_s', 'sensor_timeout_s',
-                   'goal_dwell_s', 'goal_wait_budget_s', 'goal_settle_position_m', 'goal_settle_yaw_rad', 'tick_period_s', 'status_period_s', 'tf_check_period_s',
+                   'goal_dwell_s', 'goal_wait_budget_s', 'goal_progress_reset_distance_m', 'goal_settle_position_m', 'goal_settle_yaw_rad', 'tick_period_s', 'status_period_s', 'tf_check_period_s',
                    'graph_check_period_s', 'far_status_timeout_s', 'cancel_timeout_s', 'cancel_retry_s',
                    'tf_pair_history_s', 'tf_pair_position_tolerance_m', 'tf_pair_quaternion_tolerance'),
     }
@@ -26,6 +26,8 @@ def load_profile(path):
                 raise ValueError(f'{section}.{name} must be finite')
             if 'offset' not in name and value <= 0:
                 raise ValueError(f'{section}.{name} must be positive')
+    if data['bridge']['goal_progress_reset_distance_m']<=data['bridge']['goal_settle_position_m']:
+        raise ValueError('Progress rearm distance must exceed settling noise tolerance')
     if data['bridge']['goal_wait_budget_s']<=data['bridge']['goal_dwell_s']:
         raise ValueError('Goal waiting budget must exceed arrival confirmation time')
     if data['bridge']['goal_settle_position_m']>=data['local']['goal_tolerance_m'] or data['bridge']['goal_settle_yaw_rad']>math.pi:

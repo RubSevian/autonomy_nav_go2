@@ -70,7 +70,7 @@ class ContinuationAdapterTests(unittest.TestCase):
         self.assertEqual(out[-1].twist.linear.x,0.)
 
     def test_wait_timeout_stops_and_schedules_far_cancel(self):
-        n,out,_=self.node();n.goals.wait_spent=10.;self.tick(n)
+        n,out,_=self.node();n.goals.wait_spent=n.goals.wait_budget_s;self.tick(n)
         self.assertEqual(n.goals.state,'CONTINUATION_NOT_FOUND')
         self.assertFalse(n.gate.goal_received);self.assertTrue(n.far_cancel_pending)
         self.assertEqual(out[-1].twist.linear.x,0.)
@@ -110,6 +110,24 @@ class ContinuationAdapterTests(unittest.TestCase):
         n,out,_=self.node();n.goals.state='ARRIVAL_NOT_CONFIRMED'
         self.tick(n)
         self.assertFalse(n.gate.goal_received);self.assertTrue(n.far_cancel_pending)
+        self.assertEqual(out[-1].twist.linear.x,0.)
+
+    def test_progress_observation_uses_only_actual_unmasked_navigation_motion(self):
+        for locked in (False,True):
+            n,out,_=self.node();n.goals.state='ACTIVE';n.goals.wait_spent=8.
+            pair=NS(odom=NS(stamp_ns=100_000_000_000),vehicle=NS(position=(0.,0.,0.),quaternion=(0.,0.,0.,1.)))
+            n.last_tf_check=0.;n.odometry_subscription=None;n.odom=lambda *a:None
+            n.tf_listener=NS(tf_sub=None,callback=lambda *a:None)
+            n.pairing=NS(selected=pair,select=lambda *a:pair,reason='')
+            n.resolve_vehicle=lambda *a:None;n.stopped_observed=None;n.mission_health.base_locked=locked
+            with patch('go2_navigation_bridge.drain_pending',return_value=0):self.tick(n)
+            self.assertEqual(n.goals.progress_sample is None,locked)
+            self.assertEqual(out[-1].twist.linear.x,0. if locked else .1)
+
+    def test_wait_for_fresh_path_is_accounted_in_episode_budget(self):
+        n,out,_=self.node();n.goals.state='ACTIVE';n.gate.health['path']=None
+        self.tick(n)
+        self.assertTrue(n.goals.path_waiting)
         self.assertEqual(out[-1].twist.linear.x,0.)
 
     def test_new_goal_is_rejected_while_old_cancel_is_pending(self):
