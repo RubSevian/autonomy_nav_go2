@@ -26,6 +26,10 @@ def load_profile(path):
                 raise ValueError(f'{section}.{name} must be finite')
             if 'offset' not in name and value <= 0:
                 raise ValueError(f'{section}.{name} must be positive')
+    if data['bridge']['goal_wait_budget_s']<=data['bridge']['goal_dwell_s']:
+        raise ValueError('Goal waiting budget must exceed arrival confirmation time')
+    if data['bridge']['goal_settle_position_m']>=data['local']['goal_tolerance_m'] or data['bridge']['goal_settle_yaw_rad']>math.pi:
+        raise ValueError('Invalid goal settling tolerance')
     if data['calibration']['rotation_speed_rps'] > 1.396:
         raise ValueError('Calibration speed exceeds the original 1.396 rad/s scenario')
     local, robot, bridge = data['local'], data['robot'], data['bridge']

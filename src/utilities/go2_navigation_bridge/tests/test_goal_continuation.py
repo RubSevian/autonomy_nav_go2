@@ -117,6 +117,17 @@ class GoalContinuationTests(unittest.TestCase):
         self.position(g,.12,-.31,3.,1200)
         self.assertNotEqual(g.state,'SUCCEEDED')
 
+    def test_profile_rejects_inconsistent_wait_and_settle_limits(self):
+        import tempfile,yaml
+        from navigation_profile import load_profile
+        path=Path(__file__).resolve().parents[1]/'config/real_navigation.yaml'
+        for key,value in (('goal_wait_budget_s',.5),('goal_settle_position_m',.25),
+                          ('goal_settle_yaw_rad',4.),('goal_wait_budget_s',True)):
+            profile=load_profile(path);profile['bridge'][key]=value
+            with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as f:
+                yaml.safe_dump(profile,f);f.flush()
+                with self.assertRaises(ValueError):load_profile(f.name)
+
     def test_r3_zero_requires_fresh_valid_report(self):
         import yaml
         d=dict(observed_ns=1_000_000_000,state='ACTIVE',phase='RL_ZERO',command_source='NAVIGATION',
