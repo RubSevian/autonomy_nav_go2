@@ -38,7 +38,10 @@ bridge:
   wz_limit: 0.1  # Финальный clamp NAV yaw, рад/с; максимум контракта R3 0.10.
   command_timeout_s: 0.25  # Максимальный полный возраст команды, с; верхний контракт R3 0.25.
   sensor_timeout_s: &nav_sensor_timeout_s 1.0  # Общий TTL NAV и корпуса Mission: 1000 мс, согласовано оператором 23.10.2026.
-  goal_dwell_s: 0.5  # Непрерывное нахождение внутри local goal tolerance до SUCCEEDED, с.
+  goal_dwell_s: 0.5  # Подтверждение прибытия; FAR также требует RL_ZERO и устойчивость измеренной позы.
+  goal_wait_budget_s: 10.0 # Общий накопленный бюджет остановок/перепланирования одной задачи, с.
+  goal_settle_position_m: 0.02 # Максимальное смещение от якоря подтверждения прибытия, м.
+  goal_settle_yaw_rad: 0.05 # Максимальное изменение yaw от якоря подтверждения, рад.
   tick_period_s: 0.02  # Период envelope readiness/скорости bridge, с; 0.02 = 50 Гц.
   status_period_s: 0.10 # Уточнение оператора 21.10.2026: 100 мс / 10 Гц; Mission status TTL отдельно 600 мс.
   localization_recovery_samples: 5 # Новые последовательные odometry+TF/time samples.
@@ -301,6 +304,8 @@ nodes:
   far_planner:
     opencv_threads: 1  # Потоки OpenCV contour kernels в процессе FAR; ограничивает конкуренцию с RL, не частоту planner.
     restart_on_time_jump: false  # Перезапуск при скачке ROS time; физический стек false.
+    goal_correction_stable_s: 0.4 # Подтверждение Б минимум на двух интервалах FAR 5 Гц.
+    goal_continuation_margin_m: 0.01 # Остаточный участок должен выходить за радиус остановки follower.
     main_run_freq: 5.0  # Частота FAR graph/replan и heartbeat, Гц.
     voxel_dim: 0.1  # FAR voxel, м; участвует в clearance.
     robot_dim: 0.6  # Диаметр FAR дискового envelope, м; clearance = robot_dim/2 + voxel_dim.

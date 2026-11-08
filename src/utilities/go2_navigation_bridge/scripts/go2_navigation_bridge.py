@@ -21,7 +21,7 @@ from navigation_recovery import PathRecovery
 from diagnostic_msgs.msg import DiagnosticArray
 from navigation_goal import GoalTracker
 from mission_health import MissionHealth
-from navigation_contract import valid_cloud_layout, locomotion_ready
+from navigation_contract import valid_cloud_layout, locomotion_ready, locomotion_stopped
 from localization_pairing import LocalizationPairing, PairingConfig, PoseSample, PairLookupError, pose_errors
 from tf2_ros import Buffer, TransformListener, TransformException
 from rclpy.time import Time
@@ -87,7 +87,10 @@ class NavigationBridge(Node):
         self.gate.clock_required = param('require_clock_alignment', False)
         if self.gate.clock_required:
             self.create_subscription(String, param('time_status_topic', '/utlidar/time_alignment'), self.alignment_status, 1)
-        self.goals = GoalTracker(param('goal_tolerance_m', .25), param('goal_dwell_s', .5))
+        self.goals = GoalTracker(param('goal_tolerance_m', .25), param('goal_dwell_s', .5),
+            far_mode=self.far_route, wait_budget_s=param('goal_wait_budget_s',10.),
+            settle_position_m=param('goal_settle_position_m',.02),settle_yaw_rad=param('goal_settle_yaw_rad',.05),settle_max_gap_s=self.gate.command_timeout)
+        self.stopped_observed=None
         self.tick_period = param('tick_period_s', .02)
         self.status_period = param('status_period_s', .2)
         self.tf_check_period = param('tf_check_period_s', .2)
@@ -199,6 +202,7 @@ class NavigationBridge(Node):
 
     def locomotion(self, msg):
         self.gate.locomotion(locomotion_ready(msg.data), time.monotonic())
+        self.stopped_observed=locomotion_stopped(msg.data,time.monotonic_ns(),self.gate.command_timeout)
 
     @timed_input('odom')
     def odom(self, msg):
@@ -223,10 +227,12 @@ class NavigationBridge(Node):
         self.gate.observe('lidar', valid, time.monotonic(), self.header_age(msg))
 
     def path(self, msg):
-        valid = (self.header_valid(msg) and msg.header.stamp.sec*1000000000+msg.header.stamp.nanosec > self.goals.stamp_ns) and msg.header.frame_id == 'vehicle' and len(msg.poses) > 1 and all(math.isfinite(v) for p in msg.poses for v in (p.pose.position.x,p.pose.position.y,p.pose.position.z))
+        valid = (self.header_valid(msg) and msg.header.stamp.sec*1000000000+msg.header.stamp.nanosec > max(self.goals.stamp_ns,getattr(self,'path_after_ns',0))) and msg.header.frame_id == 'vehicle' and len(msg.poses) > 1 and all(math.isfinite(v) for p in msg.poses for v in (p.pose.position.x,p.pose.position.y,p.pose.position.z))
         self.gate.observe('path', valid, time.monotonic(), self.header_age(msg))
 
     def goal(self, msg):
+        if getattr(self,'far_cancel_pending',False) or getattr(self,'far_cancel_future',None) is not None:
+            return
         if self.mission_health.base_locked:
             self.get_logger().warn('Mission base lock latched; new goal rejected for this session')
             return
@@ -240,12 +246,13 @@ class NavigationBridge(Node):
                 return
         stamp = msg.header.stamp.sec * 1000000000 + msg.header.stamp.nanosec
         valid = (not self.gate.cancelled and self.gate.localization_ready(time.monotonic()) and stamp > self.goal_after_ns and
-                 self.header_valid(msg) and msg.header.frame_id in ('map', 'camera_init') and
+                 self.header_valid(msg) and msg.header.frame_id == 'map' and
                  all(math.isfinite(v) for v in (msg.point.x, msg.point.y, msg.point.z)))
         if valid and self.goals.accept((msg.point.x,msg.point.y,msg.point.z), msg.header.frame_id, stamp, time.monotonic()):
             self.path_recovery.reset();self.path_recovery_state='READY'
             self.gate.clear_request()
             self.gate.health['path'] = None
+            self.path_after_ns=stamp
             self.gate.goal()
 
     def far_status(self, msg):
@@ -258,6 +265,9 @@ class NavigationBridge(Node):
                 if self.goals.far_status({v.key:v.value for v in status.values}, stamp, time.monotonic()):
                     self.gate.goal_received = False
                     self.gate.clear_request()
+                if self.goals.paused:
+                    self.gate.clear_request()
+                    self.command_after_ns=self.get_clock().now().nanoseconds
 
     def active(self, msg):
         try:
@@ -393,10 +403,20 @@ class NavigationBridge(Node):
                 self.goals.inside_since = None
             if valid:
                 x, y, _ = pair.vehicle.position
-                self.goals.position(x, y, now, allow_local_completion=self.local_route and self.gate.locomotion_ready and self.gate.localization_ready(now))
+                qx,qy,qz,qw=pair.vehicle.quaternion
+                yaw=math.atan2(2*(qw*qz+qx*qy),1-2*(qy*qy+qz*qz))
+                stopped=self.stopped_observed
+                if stopped is not None and not 0<=now-stopped<=self.gate.command_timeout:stopped=None
+                was_finished=self.goals.state=='SUCCEEDED'
+                self.goals.position(x, y, now, allow_local_completion=(self.local_route or self.far_route)
+                    and self.gate.locomotion_ready and self.gate.localization_ready(now)
+                    and (not self.far_route or tf_age<=self.gate.command_timeout),
+                    stamp_ns=pair.odom.stamp_ns,measurement_time=now-tf_age,yaw=yaw,stopped_time=stopped)
                 if self.goals.state == 'SUCCEEDED':
                     self.gate.goal_received = False
                     self.gate.clear_request()
+                    if self.far_route and not was_finished:
+                        self.far_cancel_pending=True;self.far_cancel_retry_at=0.
         # The matching search runs at tf_check_period_s, but expiry is checked
         # at every envelope tick. No extra grace period until the next search.
         selected = self.pairing.selected
@@ -407,6 +427,10 @@ class NavigationBridge(Node):
                 self.goal_tf_valid = False
                 self.goals.inside_since = None
                 self.gate.observe('tf', False, time.monotonic())
+        self.goals.advance(now)
+        if self.goals.state=='CONTINUATION_NOT_FOUND' and self.gate.goal_received:
+            self.gate.goal_received=False;self.gate.clear_request()
+            if self.far_route:self.far_cancel_pending=True;self.far_cancel_retry_at=0.
         self.cancel_far_tick(now)
         if self.local_route:
             self.active_hint = self.local_enabled and not self.gate.cancelled and self.gate.goal_received and self.gate.localization_ready(now)
@@ -452,9 +476,27 @@ class NavigationBridge(Node):
                 self.goals.finish('GOAL_UNREACHABLE',now);self.gate.goal_received=False;self.gate.clear_request()
             elif self.path_recovery_state=='INVALIDATE_GOAL':
                 self.goals.finish('AUTHORITY_LOST',now);self.gate.goal_received=False;self.gate.clear_request()
+        if self.goals.paused and self.gate.goal_received and not (
+                self.gate.locomotion_ready and self.gate.fresh(now,self.gate.locomotion_received,self.gate.sensor_timeout)):
+            self.goals.finish('AUTHORITY_LOST',now)
+            self.gate.goal_received=False;self.gate.clear_request()
+        if self.far_route and self.goals.stamp_ns>0 and self.goals.state in (
+                'SUCCEEDED','CONTINUATION_NOT_FOUND','AUTHORITY_LOST','LOCALIZATION_LOST','GOAL_UNREACHABLE','CANCELLED'):
+            key=(self.goals.revision,self.goals.stamp_ns)
+            if getattr(self,'far_cancelled_goal_key',None)!=key:
+                self.far_cancelled_goal_key=key
+                self.far_cancel_pending=True;self.far_cancel_retry_at=0.
         value = self.gate.output(now)
         enabled = self.gate.enabled(now)
-        if self.path_recovery_state=='WAITING_FOR_PATH':value,enabled=(0.,0.,0.),False
+        if self.goals.paused:
+            self.path_recovery.reset();self.path_recovery_state='READY'
+            self.gate.health['path']=None
+            self.path_after_ns=self.get_clock().now().nanoseconds
+        if self.path_recovery_state=='WAITING_FOR_PATH' or self.goals.paused:
+            value,enabled=(0.,0.,0.),False
+            self.gate.clear_request()
+            self.command_after_ns=self.get_clock().now().nanoseconds
+            if self.goals.paused:self.gate.block_reason=self.goals.state.lower()
         if self.mission_health.base_locked:
             value, enabled = (0.,0.,0.), False
         if self.mission_health.return_request_ns and not self.mission_health.valid(time.monotonic_ns(), self.session):

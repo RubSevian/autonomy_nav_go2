@@ -15,7 +15,7 @@ def load_profile(path):
         'local': ('search_radius_m', 'path_scale', 'max_speed_mps', 'max_yaw_rate_rps',
                   'max_accel_mps2', 'goal_tolerance_m', 'stop_distance_m', 'slow_distance_m', 'near_goal_distance_m'),
         'bridge': ('vx_limit', 'vy_limit', 'wz_limit', 'command_timeout_s', 'sensor_timeout_s',
-                   'goal_dwell_s', 'tick_period_s', 'status_period_s', 'tf_check_period_s',
+                   'goal_dwell_s', 'goal_wait_budget_s', 'goal_settle_position_m', 'goal_settle_yaw_rad', 'tick_period_s', 'status_period_s', 'tf_check_period_s',
                    'graph_check_period_s', 'far_status_timeout_s', 'cancel_timeout_s', 'cancel_retry_s',
                    'tf_pair_history_s', 'tf_pair_position_tolerance_m', 'tf_pair_quaternion_tolerance'),
     }
@@ -143,6 +143,11 @@ def load_profile(path):
     for key in ('main_run_freq', 'vehicle_height', 'robot_dim', 'voxel_dim'):
         if type(far[key]) not in (int,float) or far[key] <= 0:
             raise ValueError('FAR parameter must be positive: ' + key)
+    for key in ('goal_correction_stable_s','goal_continuation_margin_m'):
+        if type(far.get(key)) not in (int,float) or not math.isfinite(far[key]) or far[key]<=0:
+            raise ValueError('Invalid FAR approach parameter: '+key)
+    if local['stop_distance_m']+far['goal_continuation_margin_m']>=local['goal_tolerance_m']:
+        raise ValueError('FAR continuation must have room beyond follower stop radius')
     if far['robot_dim']/2 + far['voxel_dim'] < math.hypot(robot['length_m'],robot['width_m'])/2:
         raise ValueError('FAR clearance smaller than robot envelope')
     if any(nodes[name][key] != 'map' for name,key in (('terrainAnalysis','worldFrame'), ('terrainAnalysisExt','worldFrame'), ('far_planner','world_frame'), ('graph_decoder','world_frame'))):
@@ -168,7 +173,10 @@ def _derived_parameters(data):
                              slowDwnDisThre=float(local['slow_distance_m']), goalCloseDis=float(local['near_goal_distance_m']),
                              followerMotionModel=local['follower_motion_model'], enableNarrowPassageMode=local['narrow_recovered_selection']),
         'far_planner': {'sensor_offset_x':offsets['sensorOffsetX'], 'sensor_offset_y':offsets['sensorOffsetY'],
-                        'g_planner/converge_distance':float(local['goal_tolerance_m'])},
+                        'g_planner/converge_distance':float(local['goal_tolerance_m']),
+                        'goal_follower_stop_distance_m':float(local['stop_distance_m']),
+                        'goal_max_adjustment_m':float(data['nodes']['far_planner']['g_planner/goal_adjust_radius']),
+                        'goal_correction_stable_distance_m':float(data['nodes']['far_planner']['voxel_dim'])/2},
         'laserMapping': {'common.lid_topic':sensors['cloud_topic'], 'common.imu_topic':sensors['raw_imu_output_topic']},
     }
 

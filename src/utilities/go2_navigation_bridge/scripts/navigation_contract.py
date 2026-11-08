@@ -1,5 +1,6 @@
 """Navigation wire contracts; full point processing belongs to Point-LIO."""
 import yaml
+import math
 
 # Same safe YAML constructors/resolvers, backed by libyaml when available.
 # The full diagnostic payload is parsed at 10Hz; pure-Python SafeLoader was
@@ -37,3 +38,18 @@ def valid_cloud_layout(msg):
         if not size or field.count <= 0 or field.offset < 0 or field.offset + size * field.count > msg.point_step:
             return False
     return all(fields[name].datatype == 7 and fields[name].count == 1 for name in ('x', 'y', 'z', 'intensity', 'time'))
+
+
+def locomotion_stopped(payload, now_ns, timeout_s):
+    """Measured-pose settling additionally requires a fresh R3 zero-command report."""
+    try:
+        status=yaml.load(payload,Loader=_SAFE_LOADER)
+        stamp=status['observed_ns'];command=status['motion_command']
+        if (type(stamp) is int and 0<=now_ns-stamp<=timeout_s*1e9 and
+            status['state']=='ACTIVE' and status['phase']=='RL_ZERO' and
+            status['command_source']=='NAVIGATION' and status['output_enabled'] is True and
+            status['fault_latched'] is False and len(command)==3 and
+            all(type(v) in (int,float) and math.isfinite(v) and abs(v)<=1e-6 for v in command)):
+            return stamp/1e9
+    except (KeyError,TypeError,yaml.YAMLError):pass
+    return None
