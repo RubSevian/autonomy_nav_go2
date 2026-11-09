@@ -3,7 +3,7 @@ import math
 
 
 class GoalTracker:
-    def __init__(self, tolerance=.25, dwell_s=.5, *, far_mode=False, wait_budget_s=20., progress_distance_m=.1, settle_position_m=.02, settle_yaw_rad=.05, settle_max_gap_s=.25):
+    def __init__(self, tolerance=.25, dwell_s=.5, *, far_mode=False, wait_budget_s=10., progress_distance_m=.1, settle_position_m=.02, settle_yaw_rad=.05, settle_max_gap_s=.25):
         if any(not math.isfinite(v) or v <= 0 for v in (tolerance, dwell_s)):
             raise ValueError('Goal tolerance and dwell must be finite and positive')
         for v in (wait_budget_s, progress_distance_m, settle_position_m, settle_yaw_rad, settle_max_gap_s):

@@ -160,13 +160,13 @@ class GoalContinuationTests(unittest.TestCase):
     def travel(self,g,i,x,y=0.,motion=(.2,0.,0.),stamp=None):
         return g.observe_progress(x,y,0.,1000+i if stamp is None else stamp,10.+i*.1,10.+i*.1,motion)
 
-    def test_default_episode_has_twenty_seconds(self):
+    def test_default_episode_has_ten_seconds(self):
         g=self.goal();self.status(g,'ADJUSTED_GOAL_WAIT',110,2.)
-        g.advance(21.99);self.assertEqual(g.state,'REPLANNING')
-        g.advance(22.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
+        g.advance(11.99);self.assertEqual(g.state,'REPLANNING')
+        g.advance(12.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
         from navigation_profile import load_profile
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
-        self.assertEqual(profile['bridge']['goal_wait_budget_s'],20.)
+        self.assertEqual(profile['bridge']['goal_wait_budget_s'],10.)
 
     def test_measured_progress_rearms_next_episode_without_erasing_history(self):
         g=self.moving_goal()
@@ -175,13 +175,13 @@ class GoalContinuationTests(unittest.TestCase):
         self.assertEqual(g.wait_total,8.);self.assertEqual(g.progress_resets,1)
         self.assertEqual((g.revision,g.stamp_ns),(1,100))
         self.status(g,'ADJUSTED_GOAL_WAIT',130,11.)
-        g.advance(30.9);self.assertEqual(g.state,'REPLANNING')
-        g.advance(31.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
+        g.advance(20.99);self.assertEqual(g.state,'REPLANNING')
+        g.advance(21.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
 
-    def test_missing_local_path_consumes_the_same_twenty_second_episode(self):
+    def test_missing_local_path_consumes_the_same_ten_second_episode(self):
         g=self.moving_goal();g.path_waiting=True
-        g.advance(21.99);self.assertEqual(g.state,'ACTIVE') # 8 + 11.99 seconds
-        g.advance(22.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
+        g.advance(11.99);self.assertEqual(g.state,'ACTIVE') # 8 + 1.99 seconds
+        g.advance(12.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
 
     def test_detour_can_rearm_while_distance_to_original_goal_increases(self):
         g=self.moving_goal()

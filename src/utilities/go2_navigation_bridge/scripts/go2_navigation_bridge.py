@@ -88,7 +88,7 @@ class NavigationBridge(Node):
         if self.gate.clock_required:
             self.create_subscription(String, param('time_status_topic', '/utlidar/time_alignment'), self.alignment_status, 1)
         self.goals = GoalTracker(param('goal_tolerance_m', .25), param('goal_dwell_s', .5),
-            far_mode=self.far_route, wait_budget_s=param('goal_wait_budget_s',20.),
+            far_mode=self.far_route, wait_budget_s=param('goal_wait_budget_s',10.),
             progress_distance_m=param('goal_progress_reset_distance_m',.1),
             settle_position_m=param('goal_settle_position_m',.02),settle_yaw_rad=param('goal_settle_yaw_rad',.05),settle_max_gap_s=self.gate.command_timeout)
         if self.far_route:self.path_recovery.timeout_s=self.goals.wait_budget_s

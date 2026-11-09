@@ -45,6 +45,9 @@ def main():
  velocitywriter=csv.writer(velocityfile)
  velocitywriter.writerow(['receipt_mono_ns','receipt_ros_ns','clock_pair_span_ns','header_ns','frame',
                           'vx','vy','vz','wx','wy','wz',*[f'cov_{i}' for i in range(36)]])
+ odometryfile=(out/'odometry.csv').open('w',buffering=1)
+ odometrywriter=csv.writer(odometryfile)
+ odometrywriter.writerow(['receipt_mono_ns','header_ns','phase','frame','child','x','y','z','qx','qy','qz','qw','yaw','finite','dds_source_ns','dds_received_ns','receipt_ros_ns','clock_pair_span_ns'])
  velocity_count=0
  temperatures=TemperatureCapture(n,out)
  statuses=StatusCapture(statusfile,config['status_period_s'])
@@ -65,6 +68,7 @@ def main():
   yaw=math.atan2(2*(q.w*q.z+q.x*q.y),1-2*(q.y*q.y+q.z*q.z))
   values=[p.x,p.y,p.z,q.x,q.y,q.z,q.w,yaw]
   rows.append([now,m.header.stamp.sec*10**9+m.header.stamp.nanosec,phase,m.header.frame_id,m.child_frame_id,*values,all(math.isfinite(v) for v in values) and .5<sum(v*v for v in [q.x,q.y,q.z,q.w])<1.5 and bool(m.header.frame_id),info['source_timestamp'],info['received_timestamp'],ros,pair_span])
+  odometrywriter.writerow(rows[-1])
  def velocity(m):
   nonlocal velocity_count,stop,stop_reason
   if velocity_count>=config['pose_capacity']:
@@ -140,8 +144,7 @@ def main():
   raise
  finally:
   statuses.flush(time.monotonic_ns(),force=True)
-  with (out/'odometry.csv').open('w') as f:
-   w=csv.writer(f);w.writerow(['receipt_mono_ns','header_ns','phase','frame','child','x','y','z','qx','qy','qz','qw','yaw','finite','dds_source_ns','dds_received_ns','receipt_ros_ns','clock_pair_span_ns']);w.writerows(rows)
+  odometryfile.close()
   atomic(out/'marks.json',events);atomic(out/'streams.json',streams)
   atomic(out/'capture.json',{'duration_s':time.monotonic()-begin,'planned_duration_s':None if a.until_shutdown else a.seconds,'until_shutdown':a.until_shutdown,'poses':len(rows),'velocity_samples':velocity_count,'temperature_samples':temperatures.samples,'temperature_period_s':1.0,'status_recording':statuses.summary(),'capacity':config['pose_capacity'],'complete':capture_error is None and len(rows)<config['pose_capacity'] and velocity_count<config['pose_capacity'],'stop_reason':stop_reason,'error':capture_error,'recording_config':config,'config_path':str(a.config.resolve()),'own_publishers':n.get_publisher_names_and_types_by_node(n.get_name(),n.get_namespace()),'own_clients':n.get_client_names_and_types_by_node(n.get_name(),n.get_namespace()),'queue_drops':'NOT_OBSERVABLE','ground_truth':False})
   temperatures.close();velocityfile.close();statusfile.close();resourcefile.close();n.destroy_node();rclpy.shutdown()
