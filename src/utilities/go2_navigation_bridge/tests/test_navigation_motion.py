@@ -2,6 +2,7 @@
 from pathlib import Path
 import sys
 import csv
+import json
 import math
 import tempfile
 import unittest
@@ -93,6 +94,23 @@ class MotionTests(unittest.TestCase):
             self.assertGreater(r['holdout_reasons']['MEASURED_MOTION'],0)
             self.assertFalse(r['deployable'])
             self.assertLess(r['candidate_bound_m'],.01)
+            # Zero commanded velocity during laydown is NOT a stationary label.
+            with (p/'odometry.csv').open() as f:rows=list(csv.DictReader(f))
+            with (p/'odometry.csv').open('w') as f:
+                writer=csv.DictWriter(f,fieldnames=list(rows[0])+['receipt_mono_ns'])
+                writer.writeheader()
+                for row in rows:
+                    row['receipt_mono_ns']=row['header_ns'];writer.writerow(row)
+            with (p/'status.jsonl').open('w') as f:
+                for i in range(0,1000,10):
+                    data=dict(observed_ns=1_000_000_000+i*50_000_000,
+                              state='ACTIVE' if i<700 else 'CONTROLLED_STOP',
+                              phase='RL_ZERO' if i<700 else 'LIE_DOWN',
+                              output_enabled=True,motion_command=[0,0,0])
+                    f.write(json.dumps(dict(topic='/go2/locomotion_status',data=data))+'\n')
+            selected=stationary_replay(p,stationary_confirmed=True,require_stable_rl=True)
+            self.assertTrue(selected['stationary_replay_passed'])
+            self.assertGreater(selected['rl_rejected_rows'],250)
 
 
 if __name__=='__main__':unittest.main()

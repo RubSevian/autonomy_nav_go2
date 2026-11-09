@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdint>
 #include <sstream>
+#include <iomanip>
+#include <locale>
 #include <chrono>
 
 /***************************************************************************************/
@@ -23,6 +25,20 @@ FARMaster::FARMaster()
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   RCLCPP_INFO(nh_->get_logger(), "FAR Planner Node Initiated");
+}
+
+std::string FARMaster::RouteGeometry(const NodePtrStack& path) {
+  if (path.size() < 2 || path.size() > 256) return "[]";
+  std::ostringstream stream;
+  stream.imbue(std::locale::classic());
+  stream << std::setprecision(9) << '[';
+  for (std::size_t i=0; i<path.size(); ++i) {
+    if (!path[i] || !std::isfinite(path[i]->position.x) || !std::isfinite(path[i]->position.y)) return "[]";
+    if (i) stream << ',';
+    stream << '[' << path[i]->position.x << ',' << path[i]->position.y << ']';
+  }
+  stream << ']';
+  return stream.str();
 }
 
 void FARMaster::PublishPlannerStatus(const std::string& state, const std::string& code,
@@ -152,6 +168,8 @@ void FARMaster::PublishPlannerStatus(const std::string& state, const std::string
   add("waypoint_revision", std::to_string(waypoint_revision_));
   add("committed_route_hash", has_committed_route_ ? std::to_string(committed_route_hash_) : "N/A");
   add("committed_route_nodes", committed_route_nodes_);
+  add("committed_route_xy", has_committed_route_ ? committed_route_xy_ : "[]");
+  add("committed_route_frame", master_params_.world_frame);
   add("committed_waypoint_x", has_committed_waypoint_ ? std::to_string(committed_waypoint_.x) : "N/A");
   add("committed_waypoint_y", has_committed_waypoint_ ? std::to_string(committed_waypoint_.y) : "N/A");
   add("path_validation", FARPathValidation::ToString(graph_planner_.GetLastPathStatus()));
@@ -576,6 +594,8 @@ void FARMaster::PlanningCallBack() {
   };
 
   if (candidate_valid && !is_reach_goal) {
+    // Immutable geometry snapshot from this successful validation, not mutable graph pointers.
+    committed_route_xy_ = RouteGeometry(candidate_path);
     const Point3D old_waypoint = committed_waypoint_;
     const bool had_old_waypoint = has_committed_waypoint_;
     const std::uint64_t candidate_hash = route_hash(candidate_path);
@@ -621,6 +641,8 @@ void FARMaster::PlanningCallBack() {
       goal_waypoint_stamped_.header.stamp = nh_->now();
       goal_pub_->publish(goal_waypoint_stamped_);
     }
+    PublishPlannerStatus("WAYPOINT_PUBLISHED", "ROUTE_COMMITTED",
+        "validated FAR route committed and waypoint handed off");
     is_planner_running_ = true;
   } else if (!is_reach_goal) {
     // A parent-chain inconsistency or missing graph connection is transient:
@@ -1213,6 +1235,7 @@ void FARMaster::SetGoal(const geometry_msgs::msg::PointStamped& route_goal) {
   has_committed_route_ = false;
   has_committed_waypoint_ = false;
   committed_route_.clear();
+  committed_route_xy_ = "[]";
   committed_route_nodes_ = "N/A";
   // No old path may remain authorized while the new goal is being planned.
   PublishNavigationActive(false);
@@ -1272,6 +1295,7 @@ void FARMaster::NavigationCancelCallBack(const std_msgs::msg::Empty::SharedPtr) 
   nav_heading_ = Point3D(0,0,0);
   graph_planner_.CancelGoal();
   committed_route_.clear();
+  committed_route_xy_ = "[]";
   has_committed_route_ = false;
   has_committed_waypoint_ = false;
   committed_route_nodes_ = "N/A";

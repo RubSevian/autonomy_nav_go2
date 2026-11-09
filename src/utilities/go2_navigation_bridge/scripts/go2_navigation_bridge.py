@@ -87,9 +87,17 @@ class NavigationBridge(Node):
         self.gate.clock_required = param('require_clock_alignment', False)
         if self.gate.clock_required:
             self.create_subscription(String, param('time_status_topic', '/utlidar/time_alignment'), self.alignment_status, 1)
+        self.far_status_timeout = param('far_status_timeout_s', 1.5)
         self.goals = GoalTracker(param('goal_tolerance_m', .25), param('goal_dwell_s', .5),
             far_mode=self.far_route, wait_budget_s=param('goal_wait_budget_s',10.),
-            progress_distance_m=param('goal_progress_reset_distance_m',.1),
+            progress_noise_bound_m=param('goal_progress_noise_bound_m',0.),
+            progress_window_s=param('goal_progress_window_s',1.),
+            progress_endpoint_s=param('goal_progress_endpoint_s',.15),
+            progress_route_tolerance_m=param('goal_progress_route_tolerance_m',.08),
+            progress_repeat_radius_m=param('goal_progress_repeat_radius_m',.2),
+            progress_repeat_excursion_m=param('goal_progress_repeat_excursion_m',.6),
+            progress_repeat_limit=param('goal_progress_repeat_limit',3),
+            progress_route_timeout_s=self.far_status_timeout,
             settle_position_m=param('goal_settle_position_m',.02),settle_yaw_rad=param('goal_settle_yaw_rad',.05),settle_max_gap_s=self.gate.command_timeout)
         if self.far_route:self.path_recovery.timeout_s=self.goals.wait_budget_s
         self.stopped_observed=None
@@ -97,7 +105,6 @@ class NavigationBridge(Node):
         self.status_period = param('status_period_s', .2)
         self.tf_check_period = param('tf_check_period_s', .2)
         self.graph_check_period = param('graph_check_period_s', .2)
-        self.far_status_timeout = param('far_status_timeout_s', 1.5)
         self.cancel_timeout = param('cancel_timeout_s', 1.)
         self.cancel_retry = param('cancel_retry_s', .5)
         if any(not math.isfinite(v) or v <= 0 for v in (self.tick_period, self.status_period, self.tf_check_period, self.graph_check_period, self.far_status_timeout, self.cancel_timeout, self.cancel_retry)):
@@ -503,7 +510,7 @@ class NavigationBridge(Node):
             self.goals.finish('AUTHORITY_LOST',now)
             self.gate.goal_received=False;self.gate.clear_request()
         if self.far_route and self.goals.stamp_ns>0 and self.goals.state in (
-                'SUCCEEDED','CONTINUATION_NOT_FOUND','ARRIVAL_NOT_CONFIRMED','AUTHORITY_LOST','LOCALIZATION_LOST','GOAL_UNREACHABLE','CANCELLED'):
+                'SUCCEEDED','CONTINUATION_NOT_FOUND','ARRIVAL_NOT_CONFIRMED','REPEATED_ATTEMPT','PROGRESS_HISTORY_EXHAUSTED','AUTHORITY_LOST','LOCALIZATION_LOST','GOAL_UNREACHABLE','CANCELLED'):
             self.gate.goal_received=False;self.gate.clear_request()
             key=(self.goals.revision,self.goals.stamp_ns)
             if getattr(self,'far_cancelled_goal_key',None)!=key:

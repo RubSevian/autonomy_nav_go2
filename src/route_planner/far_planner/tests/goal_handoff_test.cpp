@@ -3,6 +3,14 @@
 
 struct FARGoalContractTest {
   static void Run() {
+    auto a=std::make_shared<NavNode>(); auto b=std::make_shared<NavNode>();
+    a->position=Point3D(0,0,0); b->position=Point3D(1,2,0);
+    const auto snapshot=FARMaster::RouteGeometry({a,b});
+    assert(snapshot=="[[0,0],[1,2]]");
+    b->position.x=7;
+    assert(snapshot=="[[0,0],[1,2]]"); // immutable even if graph node moves
+    assert(FARMaster::RouteGeometry({a})=="[]");
+    assert(FARMaster::RouteGeometry({a,nullptr})=="[]");
     FARMaster planner;
     planner.goal_received_=true;
     planner.has_goal_original_=true;

@@ -1,21 +1,29 @@
 """Bounded navigation request bookkeeping; no locomotion FSM or ROS dependency."""
 import math
+import json
+from navigation_progress import RouteProgress
 
 
 class GoalTracker:
-    def __init__(self, tolerance=.25, dwell_s=.5, *, far_mode=False, wait_budget_s=10., progress_distance_m=.1, settle_position_m=.02, settle_yaw_rad=.05, settle_max_gap_s=.25):
+    def __init__(self, tolerance=.25, dwell_s=.5, *, far_mode=False, wait_budget_s=10., progress_noise_bound_m=0., progress_window_s=1., progress_endpoint_s=.15, progress_route_tolerance_m=.08, progress_repeat_radius_m=.2, progress_repeat_excursion_m=.6, progress_repeat_limit=3, progress_route_timeout_s=1.5, settle_position_m=.02, settle_yaw_rad=.05, settle_max_gap_s=.25):
         if any(not math.isfinite(v) or v <= 0 for v in (tolerance, dwell_s)):
             raise ValueError('Goal tolerance and dwell must be finite and positive')
-        for v in (wait_budget_s, progress_distance_m, settle_position_m, settle_yaw_rad, settle_max_gap_s):
+        for v in (wait_budget_s, progress_route_timeout_s, settle_position_m, settle_yaw_rad, settle_max_gap_s):
             if type(v) not in (float,int) or not math.isfinite(v) or v<=0:
                 raise ValueError('Goal waiting/settling limits must be finite and positive')
-        if progress_distance_m<=settle_position_m:
-            raise ValueError('Progress rearm distance must exceed settling noise tolerance')
+        if type(progress_noise_bound_m) not in (int,float) or not math.isfinite(progress_noise_bound_m) or progress_noise_bound_m<0:
+            raise ValueError('Invalid noise bound')
+        if type(progress_repeat_limit) is not int or not 2<=progress_repeat_limit<=20:
+            raise ValueError('Invalid repeat limit')
+        self.progress=RouteProgress(noise_bound_m=progress_noise_bound_m or None,
+            window_s=progress_window_s,endpoint_s=progress_endpoint_s,route_tolerance_m=progress_route_tolerance_m,
+            repeat_radius_m=progress_repeat_radius_m,repeat_excursion_m=progress_repeat_excursion_m,
+            repeat_limit=int(progress_repeat_limit))
+        self.progress_route_timeout_s=progress_route_timeout_s
         self.settle_max_gap_s=settle_max_gap_s
         self.last_measurement=None
         self.far_mode=far_mode
         self.wait_budget_s=wait_budget_s
-        self.progress_distance_m=progress_distance_m
         self.settle_position_m=settle_position_m
         self.settle_yaw_rad=settle_yaw_rad
         self.tolerance = tolerance
@@ -24,6 +32,7 @@ class GoalTracker:
         self.reset()
 
     def reset(self):
+        self.progress.reset()
         self.target = None
         self.frame = ''
         self.stamp_ns = 0
@@ -51,8 +60,9 @@ class GoalTracker:
         if stamp_ns <= self.stamp_ns:
             return False
         # Retransmission must not reset a running or completed request.
-        if target == self.target and frame == self.frame and self.state not in ('LOCALIZATION_LOST','GOAL_UNREACHABLE','AUTHORITY_LOST','CONTINUATION_NOT_FOUND','ARRIVAL_NOT_CONFIRMED'):
+        if target == self.target and frame == self.frame and self.state not in ('LOCALIZATION_LOST','GOAL_UNREACHABLE','AUTHORITY_LOST','CONTINUATION_NOT_FOUND','ARRIVAL_NOT_CONFIRMED','REPEATED_ATTEMPT','PROGRESS_HISTORY_EXHAUSTED'):
             return False
+        self.progress.reset()
         self.revision += 1
         self.target, self.frame, self.stamp_ns = target, frame, stamp_ns
         self.started, self.finished = now, None
@@ -70,7 +80,10 @@ class GoalTracker:
 
     def advance(self, now):
         waiting=self.paused or (self.path_waiting and self.state in ('REQUESTED','ACTIVE'))
-        if waiting:self.progress_sample=None
+        self.progress.stop(waiting)
+        if self.progress.failure and self.state in ('REQUESTED','ACTIVE','REPLANNING','ARRIVAL_CONFIRMING'):
+            self.finish(self.progress.failure,now)
+            return
         if self.wait_updated is not None and waiting:
             elapsed=max(0.,now-self.wait_updated)
             self.wait_spent += elapsed
@@ -80,52 +93,31 @@ class GoalTracker:
             self.finish('ARRIVAL_NOT_CONFIRMED' if self.state=='ARRIVAL_CONFIRMING' else 'CONTINUATION_NOT_FOUND',now)
 
     def reset_progress(self):
-        self.progress_sample=None
-        self.progress_anchor=None
-        self.progress_along=0.
+        # A temporary localization/permission break clears motion evidence, not
+        # the per-goal route and repetition history.
+        self.progress.motion.reset()
+        self.progress.last_allowed=False
+        self.progress.last_route_sample=None
 
     def observe_progress(self,x,y,yaw,stamp_ns,measurement_time,now,motion):
-        """Rearm waiting only after measured travel along fresh allowed motion.
-
-        The target distance may grow on an obstacle detour. Neither a route
-        revision, rotation, duplicate pose nor idle localization jitter rearms.
-        This uses localization, not independent external ground truth.
-        """
-        if not self.far_mode or self.state not in ('REQUESTED','ACTIVE','REPLANNING','ARRIVAL_CONFIRMING') or self.wait_spent<=0:
-            self.reset_progress();return False
-        if self.state!='ACTIVE' or self.path_waiting or motion is None:
-            self.progress_sample=None;return False
-        if (type(stamp_ns) is not int or stamp_ns<=0 or
-                not all(math.isfinite(v) for v in (x,y,yaw,measurement_time,now)) or
-                not 0<=now-measurement_time<=self.settle_max_gap_s or
-                len(motion)!=3 or not all(math.isfinite(v) for v in motion)):
-            self.reset_progress();return False
-        if math.hypot(motion[0],motion[1])<=1e-6:
-            self.progress_sample=None;return False
-        previous=self.progress_sample
-        if previous is not None and stamp_ns<=previous[0]:
-            if stamp_ns<previous[0] or math.hypot(x-previous[2],y-previous[3])>1e-6:
-                self.reset_progress()
+        if not self.far_mode or self.state not in ('REQUESTED','ACTIVE','REPLANNING','ARRIVAL_CONFIRMING'):
             return False
-        current=(stamp_ns,measurement_time,x,y,yaw,motion[0],motion[1])
-        if previous is None:
-            self.progress_sample=current
-            if self.progress_anchor is None:self.progress_anchor=(x,y)
-            return False
-        dt=measurement_time-previous[1]
-        dx,dy=x-previous[2],y-previous[3]
-        speed=math.hypot(previous[5],previous[6])
-        # A discontinuous localization jump must not count as robot travel.
-        if not 0<dt<=self.settle_max_gap_s or math.hypot(dx,dy)>2*speed*dt+self.settle_position_m:
-            self.reset_progress();return False
-        ux=(math.cos(previous[4])*previous[5]-math.sin(previous[4])*previous[6])/speed
-        uy=(math.sin(previous[4])*previous[5]+math.cos(previous[4])*previous[6])/speed
-        self.progress_along+=dx*ux+dy*uy
-        self.progress_sample=current
-        net=math.hypot(x-self.progress_anchor[0],y-self.progress_anchor[1])
-        if self.progress_along+1e-9>=self.progress_distance_m and net+1e-9>=self.progress_distance_m:
+        allowed=(self.state=='ACTIVE' and not self.path_waiting and motion is not None
+                 and len(motion)==3 and all(math.isfinite(v) for v in motion)
+                 and math.hypot(motion[0],motion[1])>1e-6)
+        # A stale route cannot earn waiting credit even if localization is fresh.
+        if self.progress.route_stamp<=0 or stamp_ns-self.progress.route_stamp>self.progress_route_timeout_s*1e9:
+            allowed=False
+        direction=None
+        if allowed:
+            direction=(math.cos(yaw)*motion[0]-math.sin(yaw)*motion[1],
+                       math.sin(yaw)*motion[0]+math.cos(yaw)*motion[1])
+        fresh=self.progress.observe(x,y,stamp_ns,now-measurement_time,allowed,direction)
+        if self.progress.failure:
+            self.finish(self.progress.failure,now);return False
+        if fresh and self.wait_spent>0:
             self.wait_spent=0.;self.wait_updated=now;self.progress_resets+=1
-            self.reset_progress();return True
+            return True
         return False
 
     @property
@@ -213,6 +205,14 @@ class GoalTracker:
         except (KeyError, ValueError, TypeError):
             return False
         self.last_far_stamp=stamp_ns
+        if self.far_mode and values.get('navigation_active')=='true':
+            try:
+                if values.get('committed_route_frame')!='map':raise ValueError('Wrong route frame')
+                raw=values.get('committed_route_xy','')
+                if len(raw)>32768:raise ValueError('Route too large')
+                route=json.loads(raw)
+                self.progress.set_route(route,stamp_ns)
+            except (ValueError,TypeError):self.progress.invalidate_route('INVALID_ROUTE')
         self.far_reason = values.get('reason_code', '')
         self.correction_reason=values.get('goal_correction_reason','')
         try:
@@ -250,5 +250,5 @@ class GoalTracker:
                     far_reason=self.far_reason, adjusted=self.adjusted, correction_reason=self.correction_reason,
                     wait_spent_s=self.wait_spent, wait_budget_s=self.wait_budget_s,
                     wait_total_s=self.wait_total, waiting_for_path=self.path_waiting, progress_reset_count=self.progress_resets,
-                    progress_reset_distance_m=self.progress_distance_m,
+                    progress=self.progress.snapshot(),
                     arrival_confirmed=self.state=='SUCCEEDED')

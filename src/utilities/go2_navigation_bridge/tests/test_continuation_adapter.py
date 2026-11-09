@@ -115,13 +115,14 @@ class ContinuationAdapterTests(unittest.TestCase):
     def test_progress_observation_uses_only_actual_unmasked_navigation_motion(self):
         for locked in (False,True):
             n,out,_=self.node();n.goals.state='ACTIVE';n.goals.wait_spent=8.
+            n.goals.progress.set_route(((0.,0.),(1.,0.)),99_900_000_000)
             pair=NS(odom=NS(stamp_ns=100_000_000_000),vehicle=NS(position=(0.,0.,0.),quaternion=(0.,0.,0.,1.)))
             n.last_tf_check=0.;n.odometry_subscription=None;n.odom=lambda *a:None
             n.tf_listener=NS(tf_sub=None,callback=lambda *a:None)
             n.pairing=NS(selected=pair,select=lambda *a:pair,reason='')
             n.resolve_vehicle=lambda *a:None;n.stopped_observed=None;n.mission_health.base_locked=locked
             with patch('go2_navigation_bridge.drain_pending',return_value=0):self.tick(n)
-            self.assertEqual(n.goals.progress_sample is None,locked)
+            self.assertEqual(n.goals.progress.last_allowed,not locked)
             self.assertEqual(out[-1].twist.linear.x,0. if locked else .1)
 
     def test_wait_for_fresh_path_is_accounted_in_episode_budget(self):
@@ -134,5 +135,13 @@ class ContinuationAdapterTests(unittest.TestCase):
         n,_,_=self.node();n.far_cancel_pending=True
         NavigationBridge.goal(n,None)
         self.assertEqual(n.goals.revision,1)
+
+    def test_repetition_and_history_limit_revoke_output_and_cancel_far(self):
+        for state in ('REPEATED_ATTEMPT','PROGRESS_HISTORY_EXHAUSTED'):
+            n,out,_=self.node();n.goals.state=state
+            self.tick(n)
+            self.assertFalse(n.gate.goal_received)
+            self.assertTrue(n.far_cancel_pending)
+            self.assertEqual((out[-1].twist.linear.x,out[-1].twist.linear.y,out[-1].twist.angular.z),(0.,0.,0.))
 
 if __name__=='__main__':unittest.main()

@@ -134,6 +134,8 @@ private:
     // Route commits are an atomic handoff boundary: no partially validated
     // candidate may replace these values or be sent to localPlanner.
     NodePtrStack committed_route_;
+    std::string committed_route_xy_ = "[]";
+    static std::string RouteGeometry(const NodePtrStack& path);
     bool has_committed_route_ = false;
     std::uint64_t goal_revision_ = 0;
     std::uint64_t graph_revision_ = 0;

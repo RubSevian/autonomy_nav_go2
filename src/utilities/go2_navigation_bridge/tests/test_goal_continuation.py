@@ -144,21 +144,28 @@ class GoalContinuationTests(unittest.TestCase):
         import tempfile,yaml
         from navigation_profile import load_profile
         path=Path(__file__).resolve().parents[1]/'config/real_navigation.yaml'
-        for key,value in (('goal_wait_budget_s',.5),('goal_progress_reset_distance_m',.01),('goal_settle_position_m',.25),
+        for key,value in (('goal_wait_budget_s',.5),('goal_progress_noise_bound_m',-.01),('goal_settle_position_m',.25),
                           ('goal_settle_yaw_rad',4.),('goal_wait_budget_s',True)):
             profile=load_profile(path);profile['bridge'][key]=value
             with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as f:
                 yaml.safe_dump(profile,f);f.flush()
                 with self.assertRaises(ValueError):load_profile(f.name)
 
-    def moving_goal(self):
-        g=self.goal();self.status(g,'ADJUSTED_GOAL_WAIT',110,2.)
-        self.status(g,'ROUTE_COMMITTED',120,10.)
+    def moving_goal(self, route=((0.,0.),(2.,0.)), calibrated=True):
+        import json
+        g=self.goal(progress_noise_bound_m=.008 if calibrated else 0.)
+        self.status(g,'ADJUSTED_GOAL_WAIT',110,2.)
+        self.status(g,'ROUTE_COMMITTED',10_000_000_000,10.,navigation_active='true',
+                    committed_route_xy=json.dumps(route),committed_route_frame='map')
         self.assertEqual(g.wait_spent,8.)
         return g
 
     def travel(self,g,i,x,y=0.,motion=(.2,0.,0.),stamp=None):
-        return g.observe_progress(x,y,0.,1000+i if stamp is None else stamp,10.+i*.1,10.+i*.1,motion)
+        t=10.+i*.05;stamp=10_000_000_000+i*50_000_000 if stamp is None else stamp
+        # A successful FAR heartbeat refreshes route evidence, not waiting credit.
+        if i%10==0 and g.progress.route is not None:
+            g.progress.set_route(g.progress.routes[g.progress.route]['points'],stamp)
+        return g.observe_progress(x,y,0.,stamp,t,t,motion)
 
     def test_default_episode_has_ten_seconds(self):
         g=self.goal();self.status(g,'ADJUSTED_GOAL_WAIT',110,2.)
@@ -167,58 +174,61 @@ class GoalContinuationTests(unittest.TestCase):
         from navigation_profile import load_profile
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
         self.assertEqual(profile['bridge']['goal_wait_budget_s'],10.)
+        self.assertAlmostEqual(profile['bridge']['goal_progress_noise_bound_m'],.0342)
 
-    def test_measured_progress_rearms_next_episode_without_erasing_history(self):
+    def test_measured_small_progress_rearms_without_erasing_history(self):
         g=self.moving_goal()
-        for i in range(6):result=self.travel(g,i,.02*i)
-        self.assertTrue(result);self.assertEqual(g.wait_spent,0.)
+        credited=[self.travel(g,i,.001*i) for i in range(40)]
+        self.assertTrue(any(credited));self.assertEqual(g.wait_spent,0.)
         self.assertEqual(g.wait_total,8.);self.assertEqual(g.progress_resets,1)
-        self.assertEqual((g.revision,g.stamp_ns),(1,100))
-        self.status(g,'ADJUSTED_GOAL_WAIT',130,11.)
-        g.advance(20.99);self.assertEqual(g.state,'REPLANNING')
-        g.advance(21.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
+        self.status(g,'ADJUSTED_GOAL_WAIT',13_000_000_000,13.)
+        g.advance(22.99);self.assertEqual(g.state,'REPLANNING')
+        g.advance(23.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
 
-    def test_missing_local_path_consumes_the_same_ten_second_episode(self):
+    def test_unknown_noise_does_not_silently_fallback_to_ten_centimetres(self):
+        g=self.moving_goal(calibrated=False)
+        for i in range(60):self.travel(g,i,.005*i)
+        self.assertEqual(g.wait_spent,8.)
+        self.assertEqual(g.snapshot(13.)['progress']['motion']['reason'],'UNCALIBRATED')
+
+    def test_missing_local_path_consumes_same_episode(self):
         g=self.moving_goal();g.path_waiting=True
-        g.advance(11.99);self.assertEqual(g.state,'ACTIVE') # 8 + 1.99 seconds
+        g.advance(11.99);self.assertEqual(g.state,'ACTIVE')
         g.advance(12.);self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
 
-    def test_detour_can_rearm_while_distance_to_original_goal_increases(self):
-        g=self.moving_goal()
-        before=math.hypot(g.target[0],g.target[1])
-        for i in range(6):result=self.travel(g,i,0.,.02*i,(0.,.2,0.))
-        self.assertGreater(math.hypot(g.target[0],g.target[1]-.1),before)
-        self.assertTrue(result);self.assertEqual(g.wait_spent,0.)
+    def test_detour_can_rearm_while_distance_to_A_grows(self):
+        g=self.moving_goal(route=((0.,0.),(0.,2.)))
+        credited=[self.travel(g,i,0.,.001*i,(0.,.2,0.)) for i in range(40)]
+        self.assertTrue(any(credited));self.assertEqual(g.wait_spent,0.)
 
     def test_idle_rotation_wrong_direction_and_jitter_do_not_rearm(self):
         for motion in (None,(0.,0.,.1),(-.2,0.,0.)):
             g=self.moving_goal()
-            for i in range(10):self.travel(g,i,.02*i,motion=motion)
+            for i in range(60):self.travel(g,i,.001*i,motion=motion)
             self.assertEqual(g.wait_spent,8.)
         g=self.moving_goal()
-        for i in range(30):self.travel(g,i,.01*(i%2))
+        for i in range(60):self.travel(g,i,.002*(i%2))
         self.assertEqual(g.wait_spent,8.)
 
-    def test_pose_jump_duplicate_revision_and_gap_do_not_rearm(self):
-        g=self.moving_goal();self.travel(g,0,0.)
-        self.travel(g,1,.5) # impossible jump for this interval and command
-        self.assertEqual(g.wait_spent,8.)
-        g=self.moving_goal();self.travel(g,0,0.)
-        for i in range(1,8):self.travel(g,i,.02*i,stamp=1000)
-        self.assertEqual(g.wait_spent,8.)
-        g=self.moving_goal();self.travel(g,0,0.)
-        self.travel(g,10,.1) # unobserved gap cannot prove motion
-        self.assertEqual(g.wait_spent,8.)
+    def test_duplicate_jump_gap_and_stale_route_do_not_rearm(self):
+        for case in ('duplicate','jump','gap','stale_route'):
+            g=self.moving_goal();self.travel(g,0,0.)
+            for i in range(1,60):
+                stamp=10_000_000_000 if case=='duplicate' else 10_000_000_000+i*50_000_000
+                if case=='gap':stamp+=i*300_000_000
+                x=.3 if case=='jump' else .001*i
+                if case=='stale_route':g.progress.route_stamp=1
+                # Bypass the heartbeat helper for the stale-route scenario.
+                g.observe_progress(x,0.,0.,stamp,10.+i*.05,10.+i*.05,(.2,0.,0.))
+            self.assertEqual(g.wait_spent,8.,case)
 
-    def test_confirmed_short_moves_can_rearm_but_pause_itself_cannot(self):
-        g=self.moving_goal()
-        for i in range(4):self.travel(g,i,.02*i)
-        self.status(g,'ADJUSTED_GOAL_WAIT',130,11.)
-        self.status(g,'ROUTE_COMMITTED',140,12.)
-        for i in range(4):self.travel(g,i+21,.06+.02*i)
-        self.assertEqual(g.progress_resets,1)
-        self.assertEqual(g.wait_spent,0.)
-        self.assertEqual(g.wait_total,9.)
+    def test_repeat_failure_is_terminal_and_new_goal_clears_history(self):
+        g=self.moving_goal();g.progress.failure='REPEATED_ATTEMPT';g.advance(10.1)
+        self.assertEqual(g.state,'REPEATED_ATTEMPT')
+        self.status(g,'ROUTE_COMMITTED',11_000_000_000,11.)
+        self.assertEqual(g.state,'REPEATED_ATTEMPT')
+        self.assertTrue(g.accept(g.target,'map',12_000_000_000,12.))
+        self.assertEqual(g.progress.routes,[]);self.assertIsNone(g.progress.failure)
 
     def test_r3_zero_requires_fresh_valid_report(self):
         import yaml
