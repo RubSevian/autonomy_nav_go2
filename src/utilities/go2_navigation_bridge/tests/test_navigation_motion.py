@@ -8,10 +8,24 @@ import tempfile
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 from navigation_motion import MotionEvidence
-from nav_stationary_noise import replay as stationary_replay
+from nav_stationary_noise import replay as stationary_replay, long_term_segments
 
 
 class MotionTests(unittest.TestCase):
+    def test_long_term_distinguishes_return_from_accumulated_shift(self):
+        def points(fn):
+            return [(fn(i*.05),0.,1_000_000_000+i*50_000_000,0.) for i in range(401)]
+        drift=long_term_segments(points(lambda t:t*.005))[0]
+        oscillation=long_term_segments(points(lambda t:.02*math.sin(t*math.pi/5)))[0]
+        self.assertGreater(drift['endpoint_shift_m'],.09)
+        self.assertLess(oscillation['endpoint_shift_m'],.013)
+        self.assertGreater(oscillation['max_distance_from_start_m'],.02)
+        # Separate brief fragments cannot be mistaken for a long stand.
+        split=points(lambda t:0.)
+        split=[(x,y,stamp+(20_000_000_000 if i>=180 else 0),.3 if i>=350 else age)
+               for i,(x,y,stamp,age) in enumerate(split)]
+        self.assertEqual(long_term_segments(split),[])
+
     def replay(self, evaluator, points, start=1_000_000_000):
         return [evaluator.observe(x,y,start+i*50_000_000,0.) for i,(x,y) in enumerate(points)]
 

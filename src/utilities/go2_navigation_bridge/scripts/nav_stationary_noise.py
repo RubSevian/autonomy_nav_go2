@@ -14,6 +14,40 @@ from nav_motion_analyze import rotation
 from navigation_motion import MotionEvidence
 
 
+def long_term_segments(samples):
+    """Describe localization over continuous valid intervals, without claiming truth.
+
+    Coordinates are relative to the median of the first second, not successive
+    differences. Gaps, stale data and clock reversals must not join two stands.
+    """
+    segments=[]; current=[]
+    for sample in samples:
+        x,y,stamp,age=sample
+        valid=np.isfinite([x,y,age]).all() and 0 <= age <= .25
+        if current and (not valid or not 0 < stamp-current[-1][2] <= 250_000_000):
+            segments.append(current); current=[]
+        if valid:current.append(sample)
+    if current:segments.append(current)
+    result=[]
+    for segment in segments:
+        t=(np.array([s[2] for s in segment],dtype=np.int64)-segment[0][2])/1e9
+        if t[-1]<10:continue
+        xy=np.array([s[:2] for s in segment])
+        origin=np.median(xy[t<=1.],axis=0)
+        final=np.median(xy[t>=t[-1]-1.],axis=0)
+        radius=np.linalg.norm(xy-origin,axis=1)
+        bins=[]
+        for start in range(0,int(t[-1]),5):
+            chunk=xy[(t>=start)&(t<start+5)]
+            if len(chunk):bins.append(dict(time_s=start,xy_from_start_m=(np.median(chunk,axis=0)-origin).tolist()))
+        result.append(dict(start_stamp_ns=segment[0][2],duration_s=float(t[-1]),
+            samples=len(segment),endpoint_shift_m=float(np.linalg.norm(final-origin)),
+            max_distance_from_start_m=float(max(radius)),
+            p95_distance_from_start_m=float(np.percentile(radius,95)),
+            xy_span_m=np.ptp(xy,axis=0).tolist(),five_second_medians=bins))
+    return result
+
+
 def replay(capture, *, stationary_confirmed=False, require_stable_rl=False):
     if not stationary_confirmed:
         raise ValueError('Physical stationary confirmation is required, not merely zero commands')
@@ -114,6 +148,7 @@ def replay(capture, *, stationary_confirmed=False, require_stable_rl=False):
         require_stable_rl=require_stable_rl,rl_rejected_rows=rejected_rl,
         rl_selection='offline bracketing of unchanged zero-command steady phase, gap <= 0.75s, settled >= 5s',
         warmup_excluded_s=10.,training_fraction_of_time=.6,invalid_rows=invalid,
+        long_term_segments=long_term_segments([s for s in samples if s[2]>=start]),
         window_s=estimator.window_s,endpoint_s=estimator.endpoint_s,
         training_windows=len(distances),training_max_displacement_m=max(distances),
         candidate_bound_m=bound,candidate_rule='1.25 * training maximum; provisional engineering margin',
