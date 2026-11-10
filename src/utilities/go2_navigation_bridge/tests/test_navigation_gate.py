@@ -31,6 +31,17 @@ class GateTest(unittest.TestCase):
                 g=self.ready();v=[0.,0.,0.];v[axis]=sign*9
                 self.assertTrue(g.accept(v,0,'vehicle',10.))
                 self.assertEqual(g.output(10.),tuple(sign*(.2,.1,.1)[i] if i==axis else 0. for i in range(3)))
+    def test_full_lateral_reverse_and_diagonal_norm(self):
+        import math
+        for command in ((0,.35,0),(-.35,0,0),(-.35,-.35,.1)):
+            g=self.ready();g.limits=(.35,.35,.1)
+            self.assertTrue(g.accept(command,0,'vehicle',10.))
+            out=g.output(10.)
+            self.assertAlmostEqual(math.hypot(*out[:2]),.35)
+            ratios=[a/b for a,b in zip(out,command) if b]
+            self.assertTrue(all(abs(r-ratios[0])<1e-12 for r in ratios))
+            g.cancel();self.assertEqual(g.output(10.),ZERO)
+
     def test_header_and_receive_deadline(self):
         g=self.ready();g.accept((.1,0,0),.2,'vehicle',10.)
         self.assertNotEqual(g.output(10.04),ZERO)

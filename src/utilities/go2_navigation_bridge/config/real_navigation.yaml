@@ -36,7 +36,7 @@ local:
 # NAV clamp, свежесть и период диагностики.
 bridge:
   vx_limit: 0.35 # Финальный clamp NAV по X, м/с; отдельный контракт R3 NAV 0.35.
-  vy_limit: 0.1  # Финальный clamp NAV по Y, м/с; максимум контракта R3 0.10.
+  vy_limit: 0.35  # Финальный clamp NAV по Y, м/с; общий модуль XY ограничен 0.35.
   wz_limit: 0.1  # Финальный clamp NAV yaw, рад/с; максимум контракта R3 0.10.
   command_timeout_s: 0.25  # Максимальный полный возраст команды, с; верхний контракт R3 0.25.
   sensor_timeout_s: &nav_sensor_timeout_s 1.0  # Общий TTL NAV и корпуса Mission: 1000 мс, согласовано оператором 23.10.2026.
@@ -112,7 +112,7 @@ sensors:
 nodes:
   # Выбор local пути и obstacle/experimental narrow.
   localPlanner:
-    twoWayDrive: false  # Разрешить переключение движения вперёд/назад.
+    twoWayDrive: true  # Разрешить переключение движения вперёд/назад.
     laserVoxelSize: 0.05  # Voxel registered scan, м.
     terrainVoxelSize: 0.2  # Voxel локального terrain, м.
     useTerrainAnalysis: true  # Планировать по terrain_map вместо registered_scan.
@@ -158,7 +158,7 @@ nodes:
   pathFollower:
     speedDeadband: 0.02  # Порог нулевой линейной команды, м/с; независим от dt/ускорения.
     pubSkipNum: 1  # Пропуск циклов публикации follower; 1 = каждый второй цикл 100 Гц.
-    twoWayDrive: false  # Разрешить переключение движения вперёд/назад.
+    twoWayDrive: true  # Разрешить переключение движения вперёд/назад.
     lookAheadDis: 0.5  # Дистанция lookahead follower, м.
     yawRateGain: 1.5  # Усиление коррекции курса при движении; ошибка в рад.
     stopYawRateGain: 1.5  # Усиление коррекции курса при остановке.

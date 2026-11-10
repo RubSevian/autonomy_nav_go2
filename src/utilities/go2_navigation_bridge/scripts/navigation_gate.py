@@ -10,7 +10,7 @@ class NavigationGate:
             raise ValueError('mode must be stack or command_test')
         if not all(math.isfinite(x) and x > 0 for x in (command_timeout, sensor_timeout)):
             raise ValueError('Timeouts must be finite and positive')
-        if len(limits) != 3 or any(not math.isfinite(x) or x <= 0 or x > bound for x,bound in zip(limits,(.35,.1,.1))):
+        if len(limits) != 3 or any(not math.isfinite(x) or x <= 0 or x > bound for x,bound in zip(limits,(.35,.35,.1))):
             raise ValueError('Limits must fit the R3 NAV contract')
         self.limits = tuple(limits)
         self.mode = mode
@@ -152,6 +152,9 @@ class NavigationGate:
         # Scale the entire planar twist: independent clipping changes direction,
         # and scaling translation alone changes curvature when yaw is nonzero.
         scale = min([1.] + [limit / abs(x) for x, limit in zip(value, self.limits) if x])
+        linear_speed = math.hypot(*value[:2])
+        if linear_speed > .35:
+            scale = min(scale, .35 / linear_speed)
         self.request_unscaled = value
         self.request_scale = scale
         self.request = tuple(max(-limit, min(limit, scale * x)) for x, limit in zip(value, self.limits))

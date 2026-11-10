@@ -98,8 +98,9 @@ class GoalTracker:
             if self.state=='ARRIVAL_CONFIRMING' and now-self.confirm_started>=self.wait_budget_s:
                 self.finish('ARRIVAL_NOT_CONFIRMED',now)
         elif waiting and self.wait_spent >= self.wait_budget_s:
-            if self.state=='ARRIVAL_CONFIRMING':self.finish('ARRIVAL_NOT_CONFIRMED',now)
-            else:self.continuation_exhausted('CONTINUATION_NOT_FOUND',now)
+            # Budget exhaustion has the same fallback in every approach state.
+            reason='ARRIVAL_NOT_CONFIRMED' if self.state=='ARRIVAL_CONFIRMING' else 'CONTINUATION_NOT_FOUND'
+            self.continuation_exhausted(reason,now)
 
     def continuation_exhausted(self, reason, now):
         # This only requests a stop. Success still requires fresh pose/authority,

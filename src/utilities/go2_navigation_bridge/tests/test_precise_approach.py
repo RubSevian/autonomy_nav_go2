@@ -51,6 +51,34 @@ class PreciseApproach(unittest.TestCase):
         self.pose(g,.26,2.)
         self.assertEqual(g.state,'CONTINUATION_NOT_FOUND')
 
+    def test_budget_exhausted_during_arrival_gets_fresh_fallback(self):
+        g=self.goal()
+        # Repeated crossings consume one episode's budget, as in the trial.
+        for i in range(100):
+            t=2.+i*.1
+            self.pose(g,.099 if i%2==0 else .102,t,stopped=False)
+            if g.limited_approach:break
+        g.state='ARRIVAL_CONFIRMING';g.error_xy=.102
+        g.wait_spent=9.99;g.wait_updated=12.
+        g.advance(12.02)
+        self.assertTrue(g.limited_approach)
+        self.assertEqual(g.state,'ARRIVAL_CONFIRMING')
+        self.assertIsNone(g.inside_since)
+        self.settle(g,.102,12.1)
+        self.assertEqual(g.state,'SUCCEEDED')
+        self.assertEqual(g.snapshot(13.)['completion_quality'],'ACCEPTABLE')
+
+    def test_arrival_fallback_without_stop_expires_and_never_moves(self):
+        g=self.goal();self.pose(g,.099,2.,stopped=False)
+        g.wait_spent=9.99;g.wait_updated=2.;g.advance(2.02)
+        self.assertTrue(g.limited_approach)
+        for i in range(1,100):
+            self.pose(g,.102,2.02+i*.1,stopped=False)
+            self.assertTrue(g.paused)
+            self.assertNotEqual(g.state,'SUCCEEDED')
+        g.advance(12.03)
+        self.assertEqual(g.state,'ARRIVAL_NOT_CONFIRMED')
+
     def test_new_goal_does_not_inherit_acceptable_fallback(self):
         g=self.goal();self.pose(g,.24,2.)
         g.continuation_exhausted('CONTINUATION_NOT_FOUND',3.)

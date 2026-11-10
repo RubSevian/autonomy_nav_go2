@@ -81,7 +81,7 @@ def load_profile(path):
         raise ValueError('Require near_goal_distance > goal_tolerance: approach must start before arrival')
     # Existing R3 NAV contract remains the authority; profile must not promise
     # commands the leg controller will silently clamp to different values.
-    if any(bridge[key] > limit for key, limit in zip(('vx_limit', 'vy_limit', 'wz_limit'), (.35, .1, .1))):
+    if any(bridge[key] > limit for key, limit in zip(('vx_limit', 'vy_limit', 'wz_limit'), (.35, .35, .1))):
         raise ValueError('Bridge limits exceed existing R3 NAV contract')
     if bridge['command_timeout_s'] > .25:
         raise ValueError('Command timeout exceeds existing R3 NAV contract (0.25 s)')

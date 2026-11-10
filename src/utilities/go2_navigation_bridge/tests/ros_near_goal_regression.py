@@ -84,6 +84,8 @@ def main():
             # Match NavigationGate: scale the complete twist, preserving direction
             # and curvature. Independent clipping would overstate diagonal speed.
             scale=min([1.]+[limit/abs(v) for v,limit in zip(command,limits) if v])
+            linear_speed=math.hypot(*command[:2])
+            if linear_speed>.35:scale=min(scale,.35/linear_speed)
             applied=[max(-limit,min(limit,scale*v)) for v,limit in zip(command,limits)]
             if not ready or arrived or now-command_time>.25:applied=[0.,0.,0.]
             vx,vy,wz=applied

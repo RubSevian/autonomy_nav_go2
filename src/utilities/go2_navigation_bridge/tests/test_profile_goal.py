@@ -13,14 +13,17 @@ class ProfileGoalTest(unittest.TestCase):
     def test_profile_speed_is_accepted_by_runtime_gate(self):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
         limits=tuple(profile['bridge'][k] for k in ('vx_limit','vy_limit','wz_limit'))
-        self.assertEqual(NavigationGate(limits=limits).limits,(.35,.1,.1))
-        for invalid in ((.351,.1,.1),(.35,.101,.1),(.35,.1,.101)):
+        self.assertEqual(NavigationGate(limits=limits).limits,(.35,.35,.1))
+        for invalid in ((.351,.1,.1),(.35,.351,.1),(.35,.1,.101)):
             with self.assertRaises(ValueError):NavigationGate(limits=invalid)
 
     def test_nominal_profile(self):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
         self.assertEqual(profile['robot']['length_m'],.62)
         self.assertEqual(profile['local']['follower_motion_model'],'holonomic')
+        params=component_parameters(profile)
+        for name in ('localPlanner','pathFollower'):
+            self.assertTrue(params[name]['twoWayDrive'])
         self.assertFalse(profile['local']['narrow_recovered_selection'])
         self.assertEqual(profile['calibration']['rotation_speed_rps'],.7)
 
