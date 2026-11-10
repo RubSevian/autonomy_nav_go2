@@ -19,9 +19,9 @@ robot:
 local:
   search_radius_m: 0.55  # Радиус collision library до умножения на path_scale, м.
   path_scale: 0.75  # Масштаб готовой библиотеки путей; текущий набор требует 0.75.
-  max_speed_mps: 0.2  # Максимальная поступательная скорость follower и autonomySpeed local nodes, м/с.
+  max_speed_mps: 0.35  # Максимальная поступательная скорость follower и autonomySpeed local nodes, м/с.
   max_yaw_rate_rps: 0.1  # Максимальный yaw follower, рад/с; launch переводит в град/с.
-  max_accel_mps2: 2.0  # Ограничение изменения поступательной скорости follower, м/с².
+  max_accel_mps2: 0.2  # Ограничение изменения поступательной скорости follower, м/с².
   goal_tolerance_m: 0.10  # Желаемая точность подхода FAR/bridge, м.
   goal_acceptable_m: 0.25  # Допустимый итог только после исчерпания продолжения.
   min_approach_speed_mps: 0.10  # Нижняя целевая скорость подхода; остановка остаётся нулевой.
@@ -35,7 +35,7 @@ local:
 
 # NAV clamp, свежесть и период диагностики.
 bridge:
-  vx_limit: 0.2  # Финальный clamp NAV по X, м/с; максимум контракта R3 0.20.
+  vx_limit: 0.35 # Финальный clamp NAV по X, м/с; отдельный контракт R3 NAV 0.35.
   vy_limit: 0.1  # Финальный clamp NAV по Y, м/с; максимум контракта R3 0.10.
   wz_limit: 0.1  # Финальный clamp NAV yaw, рад/с; максимум контракта R3 0.10.
   command_timeout_s: 0.25  # Максимальный полный возраст команды, с; верхний контракт R3 0.25.

@@ -7,8 +7,16 @@ import yaml
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
 from navigation_profile import load_profile, component_parameters
 from navigation_goal import GoalTracker
+from navigation_gate import NavigationGate
 
 class ProfileGoalTest(unittest.TestCase):
+    def test_profile_speed_is_accepted_by_runtime_gate(self):
+        profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
+        limits=tuple(profile['bridge'][k] for k in ('vx_limit','vy_limit','wz_limit'))
+        self.assertEqual(NavigationGate(limits=limits).limits,(.35,.1,.1))
+        for invalid in ((.351,.1,.1),(.35,.101,.1),(.35,.1,.101)):
+            with self.assertRaises(ValueError):NavigationGate(limits=invalid)
+
     def test_nominal_profile(self):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
         self.assertEqual(profile['robot']['length_m'],.62)
@@ -18,7 +26,7 @@ class ProfileGoalTest(unittest.TestCase):
 
     def test_incompatible_geometry_and_limits(self):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
-        for section,key,value in [('calibration','rotation_speed_rps',0.),('calibration','rotation_speed_rps',2.),('robot','width_m',1.),('bridge','wz_limit',.5),('bridge','command_timeout_s',.5),('local','stop_distance_m',.3),('local','search_radius_m',float('nan')),('local','narrow_passage','false')]:
+        for section,key,value in [('calibration','rotation_speed_rps',0.),('calibration','rotation_speed_rps',2.),('robot','width_m',1.),('bridge','wz_limit',.5),('bridge','vx_limit',.351),('bridge','command_timeout_s',.5),('local','stop_distance_m',.3),('local','search_radius_m',float('nan')),('local','narrow_passage','false')]:
             changed=copy.deepcopy(profile);changed[section][key]=value
             with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as file:
                 yaml.safe_dump(changed,file);file.flush()

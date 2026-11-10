@@ -80,7 +80,11 @@ def main():
             assert all(p.poll() is None for p in processes),'planner process exited'
             ready=now-started>=3.
             elapsed=now-started-3.
-            applied=[max(-limit,min(limit,v)) for v,limit in zip(command,(profile['bridge']['vx_limit'],profile['bridge']['vy_limit'],profile['bridge']['wz_limit']))]
+            limits=(profile['bridge']['vx_limit'],profile['bridge']['vy_limit'],profile['bridge']['wz_limit'])
+            # Match NavigationGate: scale the complete twist, preserving direction
+            # and curvature. Independent clipping would overstate diagonal speed.
+            scale=min([1.]+[limit/abs(v) for v,limit in zip(command,limits) if v])
+            applied=[max(-limit,min(limit,scale*v)) for v,limit in zip(command,limits)]
             if not ready or arrived or now-command_time>.25:applied=[0.,0.,0.]
             vx,vy,wz=applied
             x+=(math.cos(yaw)*vx-math.sin(yaw)*vy)*dt

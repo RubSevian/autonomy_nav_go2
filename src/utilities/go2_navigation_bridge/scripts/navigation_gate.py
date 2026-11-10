@@ -10,7 +10,7 @@ class NavigationGate:
             raise ValueError('mode must be stack or command_test')
         if not all(math.isfinite(x) and x > 0 for x in (command_timeout, sensor_timeout)):
             raise ValueError('Timeouts must be finite and positive')
-        if len(limits) != 3 or any(not math.isfinite(x) or x <= 0 or x > bound for x,bound in zip(limits,(.2,.1,.1))):
+        if len(limits) != 3 or any(not math.isfinite(x) or x <= 0 or x > bound for x,bound in zip(limits,(.35,.1,.1))):
             raise ValueError('Limits must fit the R3 NAV contract')
         self.limits = tuple(limits)
         self.mode = mode
