@@ -77,6 +77,7 @@ sensors:
   time_warmup_s: 2.0  # Стартовое окно оценки сдвига часов без публикации cloud/IMU, с.
   time_margin_s: 0.02  # Запас к минимальному receive−measurement_end, с; не измеренная задержка сети.
   time_max_age_s: 0.5  # Предел возраста начала измерения после mapping, с; stale пакеты отбрасываются.
+  time_sensor_dropout_s: 1.0  # Перерыв поступления допустимых датчиков до DEGRADED; отдельно от возраста измерения.
   time_clock_jump_s: 0.1  # Допустимое расхождение ROS/monotonic приращений, с; больше → FAULT до restart.
   time_max_scan_duration_s: 0.2  # Максимальный относительный time точки в cloud, с.
   time_min_cloud_samples: 5  # Минимум cloud samples до фиксации общего offset.

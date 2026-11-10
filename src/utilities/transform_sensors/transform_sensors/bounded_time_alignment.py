@@ -51,6 +51,7 @@ def div_round(n, d):
 
 @dataclass(frozen=True)
 class BoundedConfig(AlignmentConfig):
+    sensor_dropout_s: float = 1.0
     envelope_window_s: float = 1.0
     envelope_history: int = 8
     segment_capacity: int = 16
@@ -66,6 +67,10 @@ class BoundedConfig(AlignmentConfig):
 
     def __post_init__(self):
         super().__post_init__()
+        if (type(self.sensor_dropout_s) not in (int, float)
+                or not math.isfinite(self.sensor_dropout_s)
+                or not self.max_age_s <= self.sensor_dropout_s <= 1.0):
+            raise ValueError('sensor_dropout_s must be between measurement age limit and 1 second')
         for key in (
             'envelope_min_cloud_samples',
             'envelope_min_imu_samples',
@@ -159,10 +164,10 @@ class BoundedTimeAlignment(SensorTimeAlignment):
         if self._ever_locked and self.state == 'LOCKED':
             ages = {s: (now_mono_ns - self._last_arrival[s]) / NS
                     if s in self._last_arrival else None for s in ('imu', 'cloud')}
-            missing = [s for s, age in ages.items() if age is None or age > self.config.max_age_s]
+            missing = [s for s, age in ages.items() if age is None or age > self.config.sensor_dropout_s]
             if missing:
                 self.dropout_diagnostic = dict(detected_mono_ns=now_mono_ns,
-                    streams=missing, arrival_age_s=ages, limit_s=self.config.max_age_s,
+                    streams=missing, arrival_age_s=ages, limit_s=self.config.sensor_dropout_s,
                     meaning='time since last valid sample reached clock mapper; not proof of network loss')
                 self._degrade('sensor_dropout_restart_required')
         return self.state == 'LOCKED'

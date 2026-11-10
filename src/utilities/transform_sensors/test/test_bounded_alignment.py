@@ -186,7 +186,7 @@ class BoundedTests(unittest.TestCase):
         self.assertEqual(c.state, 'LOCKED')
 
     def test_outage_restart_and_stale_cannot_become_fresh(self):
-        for gap in (0.5, 0.6, 2.0):
+        for gap in (1.01, 1.1, 2.0):
             c = locked()
             c.check_health(M + 3 * NS + round(gap * NS))
             self.assertEqual(c.state, 'DEGRADED')

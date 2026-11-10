@@ -103,6 +103,10 @@ def load_profile(path):
         raise ValueError('Sensor time margin + max scan duration must be smaller than max age')
     if sensors['time_max_age_s'] > bridge['sensor_timeout_s']:
         raise ValueError('Sensor relay max age must not exceed bridge sensor timeout')
+    dropout = sensors.get('time_sensor_dropout_s', 1.0)
+    if (type(dropout) not in (int, float) or not math.isfinite(dropout)
+            or not sensors['time_max_age_s'] <= dropout <= 1.0):
+        raise ValueError('Sensor dropout must be between measurement age limit and 1 second')
     for key in ('cam_offset_m', 'cloud_pitch_rad', 'imu_pitch_rad', 'imu_yaw_rad', 'imu_tilt_deg'):
         if type(sensors[key]) not in (int, float) or not math.isfinite(sensors[key]):
             raise ValueError('Invalid sensor transform: ' + key)

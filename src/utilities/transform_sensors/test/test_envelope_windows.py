@@ -43,6 +43,15 @@ def boundary_rows():
 
 
 class EnvelopeWindowTests(unittest.TestCase):
+    def test_dropout_waits_one_second_without_relaxing_measurement_age(self):
+        clock = self.undersampled_clock()
+        clock._last_arrival = {'imu': M, 'cloud': M}
+        self.assertTrue(clock.check_health(M + 600_000_000))
+        self.assertTrue(clock.check_health(M + NS))
+        self.assertFalse(clock.check_health(M + NS + 1))
+        self.assertEqual(clock.config.max_age_s, .5)
+        self.assertEqual(clock.status()['dropout_diagnostic']['streams'], ['imu', 'cloud'])
+
     def undersampled_clock(self):
         clock = BoundedTimeAlignment()
         for arrival, stream, source, span in events(3):
@@ -79,7 +88,7 @@ class EnvelopeWindowTests(unittest.TestCase):
         self.assertEqual(clock.failure_reason, 'sensor_dropout_restart_required')
         detail = clock.status()['dropout_diagnostic']
         self.assertEqual(detail['detected_mono_ns'], M + 5 * NS)
-        self.assertEqual(detail['limit_s'], .5)
+        self.assertEqual(detail['limit_s'], 1.)
         self.assertTrue(detail['streams'])
         clock.check_health(M + 6 * NS)
         self.assertEqual(clock.status()['dropout_diagnostic'], detail)
