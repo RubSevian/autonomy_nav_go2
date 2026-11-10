@@ -77,6 +77,12 @@ class EnvelopeWindowTests(unittest.TestCase):
         clock._observe_envelope('cloud', S + 4 * NS, R + 4 * NS, M + 4 * NS)
         self.assertFalse(clock.check_health(M + 5 * NS))
         self.assertEqual(clock.failure_reason, 'sensor_dropout_restart_required')
+        detail = clock.status()['dropout_diagnostic']
+        self.assertEqual(detail['detected_mono_ns'], M + 5 * NS)
+        self.assertEqual(detail['limit_s'], .5)
+        self.assertTrue(detail['streams'])
+        clock.check_health(M + 6 * NS)
+        self.assertEqual(clock.status()['dropout_diagnostic'], detail)
 
     def test_held_model_uncertainty_is_bounded_even_with_fresh_packets(self):
         clock = self.undersampled_clock()

@@ -133,6 +133,7 @@ class BoundedTimeAlignment(SensorTimeAlignment):
         self.model_updates = 0
         self.reject_reasons = Counter()
         self.failure_reason = ''
+        self.dropout_diagnostic = None
         self.last_end_residual_ns = {'cloud': None, 'imu': None}
         self._ever_locked = False
         self.skipped_envelope_windows = 0
@@ -156,10 +157,13 @@ class BoundedTimeAlignment(SensorTimeAlignment):
 
     def check_health(self, now_mono_ns):
         if self._ever_locked and self.state == 'LOCKED':
-            if any(
-                now_mono_ns - self._last_arrival.get(s, -NS) > round(self.config.max_age_s * NS)
-                for s in ('imu', 'cloud')
-            ):
+            ages = {s: (now_mono_ns - self._last_arrival[s]) / NS
+                    if s in self._last_arrival else None for s in ('imu', 'cloud')}
+            missing = [s for s, age in ages.items() if age is None or age > self.config.max_age_s]
+            if missing:
+                self.dropout_diagnostic = dict(detected_mono_ns=now_mono_ns,
+                    streams=missing, arrival_age_s=ages, limit_s=self.config.max_age_s,
+                    meaning='time since last valid sample reached clock mapper; not proof of network loss')
                 self._degrade('sensor_dropout_restart_required')
         return self.state == 'LOCKED'
 
@@ -450,6 +454,7 @@ class BoundedTimeAlignment(SensorTimeAlignment):
             envelope_count=len(self._envelopes),
             reject_reasons=dict(self.reject_reasons),
             failure_reason=self.failure_reason,
+            dropout_diagnostic=self.dropout_diagnostic,
             last_end_residual_ns=dict(self.last_end_residual_ns),
             envelope_window_counts=dict(self._window_counts),
             envelope_window_history=list(self._window_history),
