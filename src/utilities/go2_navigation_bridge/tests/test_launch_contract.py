@@ -40,10 +40,11 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
             assert by_name['pathFollower']['parameters'][0]['sendSportCommand'] is False
             assert by_name['localPlanner']['parameters'][0]['goalCloseDis']==.75
             assert by_name['pathFollower']['parameters'][0]['goalCloseDis']==.75
-            assert by_name['pathFollower']['parameters'][0]['stopDisThre']==.20
+            assert by_name['pathFollower']['parameters'][0]['stopDisThre']==.07
+            assert by_name['pathFollower']['parameters'][0]['minApproachSpeed']==.10
         if stage=='far':
             assert ('/terrain_cloud','/terrain_map_ext') in by_name['far_planner']['remappings']
-            assert by_name['far_planner']['parameters'][0]['g_planner/converge_distance']==.25
+            assert by_name['far_planner']['parameters'][0]['g_planner/converge_distance']==.10
             recorder=by_name['manual_drift_recorder']
             assert recorder['executable']=='nav_drift.py'
             assert recorder['arguments']==['--config',str(p.parents[1]/'config/real_navigation.yaml'),
@@ -68,6 +69,7 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
     changed['bridge']['tf_pair_position_tolerance_m']=.002
     changed['bridge']['tf_pair_quaternion_tolerance']=.003
     changed['local']['goal_tolerance_m']=.30
+    changed['local']['goal_acceptable_m']=.35
     changed['local']['near_goal_distance_m']=.85
     changed['sensors']['cloud_topic']='/audit/cloud'
     changed['sensors']['raw_imu_output_topic']='/audit/imu'
@@ -83,6 +85,7 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
         assert by_name['far_planner']['parameters'][0]['g_planner/converge_distance']==.30
         bridge=next(node for node in captured if node['package']=='go2_navigation_bridge')['parameters'][0]
         assert bridge['goal_tolerance_m']==.30 and bridge['imu_topic']=='/audit/imu'
+        assert bridge['goal_acceptable_m']==.35
         assert bridge['tf_pair_history_s']==1.5 and bridge['tf_pair_max_samples']==3072
         assert type(bridge['tf_pair_max_samples']) is int
         assert bridge['tf_pair_position_tolerance_m']==.002 and bridge['tf_pair_quaternion_tolerance']==.003

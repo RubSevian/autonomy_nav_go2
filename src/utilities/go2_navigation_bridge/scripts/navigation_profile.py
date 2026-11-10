@@ -9,6 +9,8 @@ def load_profile(path):
     data = yaml.safe_load(Path(path).expanduser().read_text())
     if not isinstance(data, dict):
         raise ValueError('Navigation profile must be a mapping')
+    data['local'].setdefault('goal_acceptable_m',data['local']['goal_tolerance_m'])
+    data['local'].setdefault('min_approach_speed_mps',0.)
     fields = {
         'calibration': ('rotation_speed_rps',),
         'robot': ('length_m', 'width_m', 'sensor_offset_x_m', 'sensor_offset_y_m'),
@@ -43,6 +45,11 @@ def load_profile(path):
     if data['calibration']['rotation_speed_rps'] > 1.396:
         raise ValueError('Calibration speed exceeds the original 1.396 rad/s scenario')
     local, robot, bridge = data['local'], data['robot'], data['bridge']
+    acceptable=local['goal_acceptable_m']; minimum=local['min_approach_speed_mps']
+    if type(acceptable) not in (int,float) or not math.isfinite(acceptable) or acceptable<local['goal_tolerance_m']:
+        raise ValueError('Acceptable arrival radius must cover desired accuracy')
+    if type(minimum) not in (int,float) or not math.isfinite(minimum) or not 0<=minimum<=min(local['max_speed_mps'],bridge['vx_limit'],bridge['vy_limit']):
+        raise ValueError('Approach minimum exceeds planar command limits')
     if type(bridge.get('localization_recovery_samples',5)) is not int or bridge.get('localization_recovery_samples',5)!=5:
         raise ValueError('Localization recovery requires five new valid samples')
     recovery_timeout=bridge.get('path_recovery_timeout_s',10.)
@@ -187,6 +194,7 @@ def _derived_parameters(data):
                              enableNarrowPassageMode=local['narrow_passage'], enableOrientationAwareCheck=local['orientation_aware'],
                              enableNarrowRecoveredSelection=local['narrow_recovered_selection']),
         'pathFollower': dict(offsets, **speed, maxYawRate=math.degrees(local['max_yaw_rate_rps']),
+                             minApproachSpeed=float(local.get('min_approach_speed_mps',0.)),
                              maxAccel=float(local['max_accel_mps2']), stopDisThre=float(local['stop_distance_m']),
                              slowDwnDisThre=float(local['slow_distance_m']), goalCloseDis=float(local['near_goal_distance_m']),
                              followerMotionModel=local['follower_motion_model'], enableNarrowPassageMode=local['narrow_recovered_selection']),

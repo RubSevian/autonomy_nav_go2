@@ -115,13 +115,13 @@ class ProfileGoalTest(unittest.TestCase):
         nodes=component_parameters(profile)
         self.assertEqual(nodes['localPlanner']['goalCloseDis'],.9)
         self.assertEqual(nodes['pathFollower']['goalCloseDis'],.9)
-        self.assertEqual(nodes['pathFollower']['stopDisThre'],.20)
-        self.assertEqual(nodes['far_planner']['g_planner/converge_distance'],.25)
+        self.assertEqual(nodes['pathFollower']['stopDisThre'],.07)
+        self.assertEqual(nodes['far_planner']['g_planner/converge_distance'],.10)
         goal=GoalTracker(profile['local']['goal_tolerance_m'])
         goal.accept((0.,0.,0.),'map',100,1.)
         goal.position(.35,0.,2.,True);goal.position(.35,0.,4.,True)
         self.assertNotEqual(goal.state,'SUCCEEDED')
-        for value in (0.,.2,.25,float('nan'),True):
+        for value in (0.,.05,.1,float('nan'),True):
             changed=copy.deepcopy(profile);changed['local']['near_goal_distance_m']=value
             with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as file:
                 yaml.safe_dump(changed,file);file.flush()

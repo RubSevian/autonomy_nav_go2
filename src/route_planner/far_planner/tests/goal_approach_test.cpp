@@ -3,6 +3,11 @@
 #include <cmath>
 int main() {
  using D=GoalApproach::Decision;
+ // Previous physical trial: 24.13 cm must now retain the route, not hold.
+ GoalApproach precise; precise.follower_stop_distance=.07;
+ assert(precise.Update(1.,.2413123,0.,0.,0.,0.,0.,.1)==D::CORRECTION_WAIT);
+ assert(precise.Update(2.,.2413123,0.,0.,0.,0.,0.,.1)==D::ROUTE);
+ assert(precise.Update(3.,.09,0.,0.,0.,0.,0.,.1)==D::ARRIVAL_HOLD);
  GoalApproach p;
  // Recorded task: reject the metre jump, retain and confirm the nearby point.
  assert(p.Update(1.,.096999,-.283226,.201860,-.526567,-.653458,.038966,.25)==D::CORRECTION_REJECTED);

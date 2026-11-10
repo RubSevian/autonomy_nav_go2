@@ -89,6 +89,7 @@ class NavigationBridge(Node):
             self.create_subscription(String, param('time_status_topic', '/utlidar/time_alignment'), self.alignment_status, 1)
         self.far_status_timeout = param('far_status_timeout_s', 1.5)
         self.goals = GoalTracker(param('goal_tolerance_m', .25), param('goal_dwell_s', .5),
+            acceptable_m=param('goal_acceptable_m',float(self.get_parameter('goal_tolerance_m').value)),
             far_mode=self.far_route, wait_budget_s=param('goal_wait_budget_s',10.),
             progress_noise_bound_m=param('goal_progress_noise_bound_m',0.),
             progress_window_s=param('goal_progress_window_s',1.),
@@ -500,7 +501,8 @@ class NavigationBridge(Node):
                 self.command_after_ns=self.get_clock().now().nanoseconds
                 self.gate.clear_request() # A newly checked route needs a NEW velocity request.
             if self.path_recovery_state=='GOAL_UNREACHABLE':
-                self.goals.finish('GOAL_UNREACHABLE',now);self.gate.goal_received=False;self.gate.clear_request()
+                self.goals.continuation_exhausted('GOAL_UNREACHABLE',now)
+                self.gate.goal_received=self.goals.paused;self.gate.clear_request()
             elif self.path_recovery_state=='INVALIDATE_GOAL':
                 self.goals.finish('AUTHORITY_LOST',now);self.gate.goal_received=False;self.gate.clear_request()
         if self.far_route:

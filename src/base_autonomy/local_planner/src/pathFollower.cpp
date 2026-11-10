@@ -68,6 +68,7 @@ double omniDirDiffThre = 1.5;
 double noRotSpeed = 10.0;
 double stopDisThre = 0.2;
 double slowDwnDisThre = 1.0;
+double minApproachSpeed = 0.;
 bool useInclRateToSlow = false;
 double inclRateThre = 120.0;
 double slowRate1 = 0.25;
@@ -533,6 +534,7 @@ int main(int argc, char** argv)
   nh->declare_parameter<double>("maxYawRate", maxYawRate);
   nh->declare_parameter<double>("maxSpeed", maxSpeed);
   nh->declare_parameter<double>("maxAccel", maxAccel);
+  nh->declare_parameter<double>("minApproachSpeed", minApproachSpeed);
   nh->declare_parameter<double>("speedDeadband", speedDeadband);
   nh->declare_parameter<double>("switchTimeThre", switchTimeThre);
   nh->declare_parameter<double>("dirDiffThre", dirDiffThre);
@@ -578,6 +580,9 @@ int main(int argc, char** argv)
   nh->get_parameter("maxYawRate", maxYawRate);
   nh->get_parameter("maxSpeed", maxSpeed);
   nh->get_parameter("maxAccel", maxAccel);
+  nh->get_parameter("minApproachSpeed", minApproachSpeed);
+  if (!std::isfinite(minApproachSpeed) || minApproachSpeed < 0. || minApproachSpeed > maxSpeed)
+    throw std::invalid_argument("minApproachSpeed must be in [0, maxSpeed]");
   nh->get_parameter("speedDeadband", speedDeadband);
   if (!std::isfinite(speedDeadband) || speedDeadband < 0. || speedDeadband >= maxSpeed)
     throw std::invalid_argument("speedDeadband must be finite and in [0, maxSpeed)");
@@ -942,7 +947,7 @@ int main(int argc, char** argv)
       if (pathSize <= 1) {
         joySpeed2 = 0;
       } else if (endDis / slowDwnDisThre < joySpeed) {
-        joySpeed2 *= endDis / slowDwnDisThre;
+        joySpeed2 = local_planner::approachSpeed(joySpeed2,endDis,slowDwnDisThre,minApproachSpeed);
       }
 
       float joySpeed3 = joySpeed2;

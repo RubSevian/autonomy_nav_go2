@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 
@@ -22,6 +23,14 @@ inline bool measurementFresh(int64_t stamp, int64_t now, double timeout) {
 
 inline double applySpeedDeadband(double speed, double deadband) {
   return std::abs(speed) <= deadband ? 0. : speed;
+}
+
+// Floor applies only to an existing approach request, before safety slowdown.
+inline double approachSpeed(double requested, double end_distance, double slow_distance, double minimum) {
+  if (requested == 0.) return 0.;
+  const double magnitude=std::abs(requested);
+  const double slowed=magnitude*std::min(1.,std::max(0.,end_distance/slow_distance));
+  return std::copysign(std::min(magnitude,std::max(minimum,slowed)),requested);
 }
 
 // Full normalized quaternion rotation of sensor-to-vehicle translation.

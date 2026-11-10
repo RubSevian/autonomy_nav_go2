@@ -5,7 +5,7 @@ from navigation_progress import RouteProgress
 
 
 class GoalTracker:
-    def __init__(self, tolerance=.25, dwell_s=.5, *, far_mode=False, wait_budget_s=10., progress_noise_bound_m=0., progress_window_s=1., progress_endpoint_s=.15, progress_route_tolerance_m=.08, progress_repeat_radius_m=.2, progress_repeat_excursion_m=.6, progress_repeat_limit=3, progress_route_timeout_s=1.5, settle_position_m=.02, settle_yaw_rad=.05, settle_max_gap_s=.25):
+    def __init__(self, tolerance=.25, dwell_s=.5, *, acceptable_m=None, far_mode=False, wait_budget_s=10., progress_noise_bound_m=0., progress_window_s=1., progress_endpoint_s=.15, progress_route_tolerance_m=.08, progress_repeat_radius_m=.2, progress_repeat_excursion_m=.6, progress_repeat_limit=3, progress_route_timeout_s=1.5, settle_position_m=.02, settle_yaw_rad=.05, settle_max_gap_s=.25):
         if any(not math.isfinite(v) or v <= 0 for v in (tolerance, dwell_s)):
             raise ValueError('Goal tolerance and dwell must be finite and positive')
         for v in (wait_budget_s, progress_route_timeout_s, settle_position_m, settle_yaw_rad, settle_max_gap_s):
@@ -26,6 +26,9 @@ class GoalTracker:
         self.wait_budget_s=wait_budget_s
         self.settle_position_m=settle_position_m
         self.settle_yaw_rad=settle_yaw_rad
+        self.acceptable = tolerance if acceptable_m is None else acceptable_m
+        if type(self.acceptable) not in (int,float) or not math.isfinite(self.acceptable) or self.acceptable<tolerance:
+            raise ValueError('Acceptable radius must cover desired accuracy')
         self.tolerance = tolerance
         self.dwell_s = dwell_s
         self.revision = 0
@@ -33,6 +36,7 @@ class GoalTracker:
 
     def reset(self):
         self.progress.reset()
+        self.limited_approach=False;self.approach_limit_reason='';self.confirm_started=None
         self.target = None
         self.frame = ''
         self.stamp_ns = 0
@@ -63,6 +67,7 @@ class GoalTracker:
         if target == self.target and frame == self.frame and self.state not in ('LOCALIZATION_LOST','GOAL_UNREACHABLE','AUTHORITY_LOST','CONTINUATION_NOT_FOUND','ARRIVAL_NOT_CONFIRMED','REPEATED_ATTEMPT','PROGRESS_HISTORY_EXHAUSTED'):
             return False
         self.progress.reset()
+        self.limited_approach=False;self.approach_limit_reason='';self.confirm_started=None
         self.revision += 1
         self.target, self.frame, self.stamp_ns = target, frame, stamp_ns
         self.started, self.finished = now, None
@@ -81,16 +86,34 @@ class GoalTracker:
     def advance(self, now):
         waiting=self.paused or (self.path_waiting and self.state in ('REQUESTED','ACTIVE'))
         self.progress.stop(waiting)
-        if self.progress.failure and self.state in ('REQUESTED','ACTIVE','REPLANNING','ARRIVAL_CONFIRMING'):
-            self.finish(self.progress.failure,now)
+        if self.progress.failure and not self.limited_approach and self.state in ('REQUESTED','ACTIVE','REPLANNING','ARRIVAL_CONFIRMING'):
+            self.continuation_exhausted(self.progress.failure,now)
             return
         if self.wait_updated is not None and waiting:
             elapsed=max(0.,now-self.wait_updated)
             self.wait_spent += elapsed
             self.wait_total += elapsed
         self.wait_updated=now
-        if waiting and self.wait_spent >= self.wait_budget_s:
-            self.finish('ARRIVAL_NOT_CONFIRMED' if self.state=='ARRIVAL_CONFIRMING' else 'CONTINUATION_NOT_FOUND',now)
+        if self.limited_approach:
+            if self.state=='ARRIVAL_CONFIRMING' and now-self.confirm_started>=self.wait_budget_s:
+                self.finish('ARRIVAL_NOT_CONFIRMED',now)
+        elif waiting and self.wait_spent >= self.wait_budget_s:
+            if self.state=='ARRIVAL_CONFIRMING':self.finish('ARRIVAL_NOT_CONFIRMED',now)
+            else:self.continuation_exhausted('CONTINUATION_NOT_FOUND',now)
+
+    def continuation_exhausted(self, reason, now):
+        # This only requests a stop. Success still requires fresh pose/authority,
+        # a new stopped acknowledgment and stable measured dwell inside the radius.
+        if (not self.limited_approach and self.acceptable>self.tolerance and
+                self.error_xy is not None and self.error_xy<=self.acceptable):
+            self.limited_approach=True;self.approach_limit_reason=reason
+            self.confirm_started=now;self.state='ARRIVAL_CONFIRMING';self.hold_since=now
+            self.inside_since=None;self.settle_anchor=None;self.path_waiting=False
+        else:self.finish(reason,now)
+
+    @property
+    def completion_tolerance(self):
+        return self.acceptable if self.limited_approach else self.tolerance
 
     def reset_progress(self):
         # A temporary localization/permission break clears motion evidence, not
@@ -113,8 +136,8 @@ class GoalTracker:
             direction=(math.cos(yaw)*motion[0]-math.sin(yaw)*motion[1],
                        math.sin(yaw)*motion[0]+math.cos(yaw)*motion[1])
         fresh=self.progress.observe(x,y,stamp_ns,now-measurement_time,allowed,direction)
-        if self.progress.failure:
-            self.finish(self.progress.failure,now);return False
+        if self.progress.failure and not self.limited_approach:
+            self.continuation_exhausted(self.progress.failure,now);return False
         if fresh and self.wait_spent>0:
             self.wait_spent=0.;self.wait_updated=now;self.progress_resets+=1
             return True
@@ -157,12 +180,14 @@ class GoalTracker:
             # Point-LIO may revise a pose at the same measurement stamp. A
             # duplicate cannot advance dwell, but a changed pose must break it.
             anchor=self.settle_anchor
-            changed=(self.error_xy>self.tolerance or stamp_ns<self.last_pose_stamp or
+            changed=(self.error_xy>self.completion_tolerance or stamp_ns<self.last_pose_stamp or
                 (anchor is not None and (math.hypot(x-anchor[0],y-anchor[1])>self.settle_position_m or
                 abs(math.atan2(math.sin(yaw-anchor[2]),math.cos(yaw-anchor[2])))>self.settle_yaw_rad)))
             if changed:
                 self.inside_since=None;self.settle_anchor=None
-                if self.error_xy>self.tolerance and self.state=='ARRIVAL_CONFIRMING':
+                if self.error_xy>self.completion_tolerance and self.state=='ARRIVAL_CONFIRMING':
+                    if self.limited_approach:
+                        self.finish('CONTINUATION_NOT_FOUND',now);return
                     self.state='REPLANNING';self.hold_since=None
             return
         self.last_pose_stamp=stamp_ns
@@ -173,7 +198,9 @@ class GoalTracker:
         if self.last_measurement is None or not 0<measured-self.last_measurement<=self.settle_max_gap_s:
             self.inside_since=None;self.settle_anchor=None
         self.last_measurement=measured
-        if self.error_xy>self.tolerance:
+        if self.error_xy>self.completion_tolerance:
+            if self.limited_approach:
+                self.finish('CONTINUATION_NOT_FOUND',now);return
             self.inside_since=None;self.settle_anchor=None
             if self.state=='ARRIVAL_CONFIRMING':
                 self.state='REPLANNING';self.hold_since=None
@@ -245,7 +272,10 @@ class GoalTracker:
     def snapshot(self, now):
         return dict(revision=self.revision, stamp_ns=self.stamp_ns, state=self.state, frame=self.frame,
                     requested=list(self.target) if self.target else None,
-                    error_xy_m=self.error_xy, tolerance_m=self.tolerance,
+                    error_xy_m=self.error_xy, tolerance_m=self.completion_tolerance,
+                    desired_tolerance_m=self.tolerance, acceptable_tolerance_m=self.acceptable,
+                    approach_limit_reason=self.approach_limit_reason,
+                    completion_quality=('ACCEPTABLE' if self.limited_approach else 'DESIRED') if self.state=='SUCCEEDED' else None,
                     elapsed_s=None if self.started is None else (self.finished or now)-self.started,
                     far_reason=self.far_reason, adjusted=self.adjusted, correction_reason=self.correction_reason,
                     wait_spent_s=self.wait_spent, wait_budget_s=self.wait_budget_s,

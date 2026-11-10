@@ -39,3 +39,12 @@ TEST(PathReference, FullPitchLeverArmAndQuaternionNormalization) {
     EXPECT_NEAR(p[2],.3*std::sin(angle),1.e-12);
   }
 }
+
+TEST(PathReference, ApproachFloorPreservesStopDirectionAndUpperRequest) {
+  EXPECT_DOUBLE_EQ(local_planner::approachSpeed(.2,.25,.75,.1),.1);
+  EXPECT_DOUBLE_EQ(local_planner::approachSpeed(.2,.10,.75,.1),.1);
+  EXPECT_DOUBLE_EQ(local_planner::approachSpeed(0.,.10,.75,.1),0.);
+  EXPECT_DOUBLE_EQ(local_planner::approachSpeed(-.2,.10,.75,.1),-.1);
+  EXPECT_DOUBLE_EQ(local_planner::approachSpeed(.05,.10,.75,.1),.05);
+  EXPECT_DOUBLE_EQ(local_planner::approachSpeed(.2,1.,.75,.1),.2);
+}

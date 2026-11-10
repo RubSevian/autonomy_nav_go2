@@ -22,8 +22,10 @@ local:
   max_speed_mps: 0.2  # Максимальная поступательная скорость follower и autonomySpeed local nodes, м/с.
   max_yaw_rate_rps: 0.1  # Максимальный yaw follower, рад/с; launch переводит в град/с.
   max_accel_mps2: 2.0  # Ограничение изменения поступательной скорости follower, м/с².
-  goal_tolerance_m: 0.25  # XY радиус достижения цели FAR/bridge, м.
-  stop_distance_m: 0.20  # Дистанция полной остановки follower, м; меньше goal_tolerance_m.
+  goal_tolerance_m: 0.10  # Желаемая точность подхода FAR/bridge, м.
+  goal_acceptable_m: 0.25  # Допустимый итог только после исчерпания продолжения.
+  min_approach_speed_mps: 0.10  # Нижняя целевая скорость подхода; остановка остаётся нулевой.
+  stop_distance_m: 0.07  # Дистанция полной остановки follower, м; меньше goal_tolerance_m.
   near_goal_distance_m: 0.75  # Близкий подход localPlanner/follower; не допуск прибытия. Отдельно от 25 см.
   slow_distance_m: 0.75  # Дистанция начала замедления, м.
   follower_motion_model: holonomic  # holonomic = vx/vy/wz; unicycle = без бокового хода.
