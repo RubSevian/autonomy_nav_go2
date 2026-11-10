@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Subscriber-only trajectory capture with explicit operator phase marks."""
-import argparse,csv,json,math,select,signal,sys,time,shutil,subprocess
+import argparse,csv,json,math,select,signal,sys,time,shutil,subprocess,os
+from ros_shutdown import close_with_timeout
 from datetime import datetime
 from temperature_capture import TemperatureCapture
 from status_capture import StatusCapture,event_signature
@@ -146,11 +147,19 @@ def main():
   statuses.flush(time.monotonic_ns(),force=True)
   odometryfile.close()
   atomic(out/'marks.json',events);atomic(out/'streams.json',streams)
-  atomic(out/'capture.json',{'duration_s':time.monotonic()-begin,'planned_duration_s':None if a.until_shutdown else a.seconds,'until_shutdown':a.until_shutdown,'poses':len(rows),'velocity_samples':velocity_count,'temperature_samples':temperatures.samples,'temperature_period_s':1.0,'status_recording':statuses.summary(),'capacity':config['pose_capacity'],'complete':capture_error is None and len(rows)<config['pose_capacity'] and velocity_count<config['pose_capacity'],'stop_reason':stop_reason,'error':capture_error,'recording_config':config,'config_path':str(a.config.resolve()),'own_publishers':n.get_publisher_names_and_types_by_node(n.get_name(),n.get_namespace()),'own_clients':n.get_client_names_and_types_by_node(n.get_name(),n.get_namespace()),'queue_drops':'NOT_OBSERVABLE','ground_truth':False})
-  temperatures.close();velocityfile.close();statusfile.close();resourcefile.close();n.destroy_node();rclpy.shutdown()
+  atomic(out/'capture.json',{'duration_s':time.monotonic()-begin,'planned_duration_s':None if a.until_shutdown else a.seconds,'until_shutdown':a.until_shutdown,'poses':len(rows),'velocity_samples':velocity_count,'temperature_samples':temperatures.samples,'temperature_period_s':1.0,'status_recording':statuses.summary(),'capacity':config['pose_capacity'],'complete':capture_error is None and len(rows)<config['pose_capacity'] and velocity_count<config['pose_capacity'],'stop_reason':stop_reason,'error':capture_error,'recording_config':config,'config_path':str(a.config.resolve()),'own_publishers':[],'own_clients':[],'queue_drops':'NOT_OBSERVABLE','ground_truth':False})
+  temperatures.close();velocityfile.close();statusfile.close();resourcefile.close()
+  def close_ros():n.destroy_node();rclpy.try_shutdown()
+  clean_shutdown=close_with_timeout(close_ros)
+  atomic(out/'shutdown.json',dict(dds_cleanup_complete=clean_shutdown,cleanup_timeout_s=5.,files_closed=True))
  if config['analyze_on_finish']:
-  subprocess.run([sys.executable,str(Path(__file__).with_name('nav_drift_analyze.py')),str(out)],check=True)
-  subprocess.run([sys.executable,str(Path(__file__).with_name('nav_motion_analyze.py')),str(out)],check=True)
+  subprocess.run([sys.executable,str(Path(__file__).with_name('nav_drift_analyze.py')),str(out)],check=True,timeout=30)
+  subprocess.run([sys.executable,str(Path(__file__).with_name('nav_motion_analyze.py')),str(out)],check=True,timeout=30)
  print('Saved recording: '+str(out),flush=True)
- return 0
-if __name__=='__main__':raise SystemExit(main())
+ return 0 if clean_shutdown else 70
+if __name__=='__main__':
+ try:code=main()
+ except Exception:
+  import traceback
+  traceback.print_exc();code=1
+ sys.stdout.flush();sys.stderr.flush();os._exit(code)

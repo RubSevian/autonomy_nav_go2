@@ -445,16 +445,40 @@ class Repuber(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    transform_node = Repuber()
+    import os
+    import sys
+    import threading
+    from rclpy.signals import SignalHandlerOptions
+    stopping=False
+    def interrupt(*unused):
+        nonlocal stopping
+        stopping=True
+        raise KeyboardInterrupt
+    rclpy.init(args=args,signal_handler_options=SignalHandlerOptions.NO)
+    signal.signal(signal.SIGINT,interrupt)
+    signal.signal(signal.SIGTERM,interrupt)
+    transform_node=None
     try:
+        transform_node=Repuber()
         rclpy.spin(transform_node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        transform_node.destroy_node()
-        rclpy.try_shutdown()
+        signal.signal(signal.SIGINT,signal.SIG_IGN)
+        signal.signal(signal.SIGTERM,signal.SIG_IGN)
+        outcome=[]
+        def cleanup():
+            try:
+                if transform_node is not None:transform_node.destroy_node()
+                rclpy.try_shutdown();outcome.append(True)
+            except Exception:outcome.append(False)
+        worker=threading.Thread(target=cleanup,daemon=True)
+        worker.start();worker.join(5.)
+        if not outcome or not outcome[0] or worker.is_alive():
+            print('Sensor relay DDS cleanup timed out or failed',file=sys.stderr,flush=True)
+            os._exit(70)
+        if stopping:
+            sys.stdout.flush();sys.stderr.flush();os._exit(0)
 
 
 if __name__ == '__main__':

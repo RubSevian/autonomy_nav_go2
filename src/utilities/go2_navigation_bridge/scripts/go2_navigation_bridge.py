@@ -548,10 +548,15 @@ class NavigationBridge(Node):
         self.status_pub.publish(String(data=json.dumps(dict(localization_batch=getattr(self,'localization_batch',{}), input_timing=self.input_timing.snapshot(), callback_timing=dict(tick_gap_s=self.tick_gap_s,pre_status_work_s=(time.monotonic_ns()-tick_started_ns)/1e9,pairing_work_s=getattr(self,'pairing_work_s',None)), observed_ns=time.monotonic_ns(), goal=self.goals.snapshot(now), session_id=self.session, input_mode=self.gate.mode, navigation_ready=self.gate.localization_ready(now), localization_recovery_good=self.gate.recovery.good if self.gate.recovery else None, path_recovery=self.path_recovery_state, path_recovery_since=self.path_recovery.since, command_enabled=enabled, cancel_latched=self.gate.cancelled, far_cancel_pending=self.far_cancel_pending or self.far_cancel_future is not None, new_goal_required=self.gate.mode=="stack" and not self.gate.goal_received, block_reason=self.gate.block_reason, tf_error=self.tf_error, tf_pair=self.pairing.snapshot(self.get_clock().now().nanoseconds), health_ages={name: None if stamp is None else now-stamp for name,stamp in self.gate.health.items()}, odom_frame=self.last_odom_frame, requested_command=list(self.gate.request_unscaled), command_scale=self.gate.request_scale, command=list(value), base_locked=self.mission_health.base_locked, return_request_ns=self.mission_health.return_request_ns))))
 
 def main():
+    import os, sys
+    from ros_shutdown import close_with_timeout
+    stopping=False
     # Stop spin in the Python thread before destroying DDS handles. The default
     # deferred ROS signal handler can invalidate them during take_message().
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
     def interrupt(*unused):
+        nonlocal stopping
+        stopping=True
         raise KeyboardInterrupt
     signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGTERM, interrupt)
@@ -569,9 +574,15 @@ def main():
         # and forwarding. Do not interrupt resource destruction a second time.
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        if node is not None:
-            node.destroy_node()
-        rclpy.try_shutdown()
+        def cleanup():
+            if node is not None:node.destroy_node()
+            rclpy.try_shutdown()
+        clean=close_with_timeout(cleanup)
+        if not clean:
+            print('NAV DDS cleanup timed out or failed',file=sys.stderr,flush=True)
+            os._exit(70)
+        if stopping:
+            sys.stdout.flush();sys.stderr.flush();os._exit(0)
 
 if __name__ == '__main__':
     main()
