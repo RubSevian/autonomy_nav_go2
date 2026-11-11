@@ -37,6 +37,7 @@
 #include "IMU_Processing.hpp"
 #include "parameters.h"
 #include "bounded_sensor_queue.hpp"
+#include "stage_timing.hpp"
 #include <std_msgs/msg/string.hpp>
 #include <sstream>
 #include "Estimator.h"
@@ -57,6 +58,8 @@ int scan_count = 0;
 int publish_count = 0;
 size_t dropped_lidar_scans = 0;
 size_t dropped_imu_samples = 0;
+point_lio::StageTiming callback_timing, executor_timing, sync_timing, scan_timing;
+point_lio::StageTiming prepare_timing, downsample_timing, estimation_timing, map_timing, publish_timing;
 
 int frame_ct = 0;
 double time_update_last = 0.0;
@@ -270,6 +273,7 @@ void lasermap_fov_segment()
 
 void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg)
 {
+    point_lio::StageTimer callback_timer(callback_timing);
     // std::cout << "standard_pcl_cbk() run once!\n";
 
     mtx_buffer.lock();
@@ -967,6 +971,22 @@ int RunMapping()
              << ",\"last_odom_publish_ns\":" << last_odom_publish_ns
              << ",\"last_odom_age_s\":" << (last_odom_header_ns ? (now_ns-last_odom_header_ns)/1.e9 : -1.)
              << ",\"max_odom_publication_age_s\":" << max_odom_publication_age_s << "}";
+        // Nested stages overlap intentionally: callback is inside executor;
+        // prepare/downsample/estimation/map/publish are inside scan.
+        auto body = text.str(); body.pop_back();
+        text.str(""); text.clear(); text << body << ",\"stage_timing\":{";
+        const std::pair<const char*, const point_lio::StageTiming*> stages[] = {
+            {"lidar_callback", &callback_timing}, {"executor", &executor_timing},
+            {"sync", &sync_timing}, {"scan", &scan_timing}, {"prepare", &prepare_timing},
+            {"downsample_and_initial_map", &downsample_timing}, {"estimation", &estimation_timing},
+            {"map_incremental", &map_timing}, {"publish_cloud_path", &publish_timing}};
+        bool first = true;
+        for (const auto& stage : stages) {
+            if (!first) text << ",";
+            first = false;
+            text << "\"" << stage.first << "\":"; stage.second->Json(text);
+        }
+        text << "}}";
         std_msgs::msg::String message; message.data=text.str(); timing_pub->publish(message);
     });
 
@@ -987,19 +1007,29 @@ int RunMapping()
         if (flg_exit)
             break;
 
-        input_executor.spin_some();
+        {
+            point_lio::StageTimer executor_timer(executor_timing);
+            input_executor.spin_some();
+        }
 
         if (time_reset_requested) {
             RCLCPP_WARN(node->get_logger(), "[TIME_RESET] restarting Point-LIO with a fresh EKF, map and sensor queues");
             break;
         }
 
-        if (sync_packages(Measures) == false)
+        bool synchronized;
+        {
+            point_lio::StageTimer sync_timer(sync_timing);
+            synchronized = sync_packages(Measures);
+        }
+        if (!synchronized)
         {
             sleep_rate();
             continue;
         }
 
+        point_lio::StageTimer scan_timer(scan_timing);
+        point_lio::StageTimer stage_timer(prepare_timing);
         if (flg_first_scan)
         {
             first_lidar_time = Measures.lidar_beg_time;
@@ -1082,6 +1112,7 @@ int RunMapping()
         lasermap_fov_segment();
 
         t1 = omp_get_wtime();
+        stage_timer.Next(downsample_timing);
         if (space_down_sample)
         {
             downSizeFilterSurf.setInputCloud(feats_undistort);
@@ -1135,6 +1166,7 @@ int RunMapping()
         Nearest_Points.resize(feats_down_size);
 
         t2 = omp_get_wtime();
+        stage_timer.Next(estimation_timing);
 
         /*** iterated state estimation ***/
 
@@ -1456,6 +1488,7 @@ int RunMapping()
 
         /*** add the feature points to map kdtree ***/
         t3 = omp_get_wtime();
+        stage_timer.Next(map_timing);
 
         if (feats_down_size > 4)
         {
@@ -1463,6 +1496,7 @@ int RunMapping()
         }
 
         t5 = omp_get_wtime();
+        stage_timer.Next(publish_timing);
 
         /******* Publish points *******/
 
@@ -1475,6 +1509,8 @@ int RunMapping()
         if (scan_pub_en && scan_body_pub_en)
             publish_frame_body(pubLaserCloudFullRes_body);
 
+        stage_timer.Stop();
+        scan_timer.Stop();
         /*** Debug variables Logging ***/
         if (runtime_pos_log)
         {

@@ -121,6 +121,10 @@ install(
 
 if(BUILD_TESTING)
   enable_testing()
+  add_executable(stage_timing_test tests/stage_timing_test.cpp)
+  target_include_directories(stage_timing_test PRIVATE src)
+  target_compile_options(stage_timing_test PRIVATE -UNDEBUG)
+  add_test(NAME stage_timing_test COMMAND stage_timing_test)
   add_executable(rotation_covariance_test tests/rotation_covariance_test.cpp)
   target_compile_options(rotation_covariance_test PRIVATE -UNDEBUG)
   add_test(NAME rotation_covariance_test COMMAND rotation_covariance_test)
