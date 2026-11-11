@@ -40,3 +40,19 @@ def test_backlog_work_is_bounded_and_order_preserved():
     sub=subscription(range(100));seen=[]
     assert drain_pending(sub,seen.append)==32
     assert seen==list(range(32)) and len(sub.handle.rows)==68
+
+
+def test_slow_callback_drain_yields_before_next_message():
+    import time
+    from types import SimpleNamespace
+    from contextlib import nullcontext
+    pending=list(range(20));seen=[]
+    class Handle:
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def take_message(self,*args):return (pending.pop(0),None) if pending else None
+    subscription=SimpleNamespace(handle=Handle(),msg_type=None,raw=False)
+    def callback(value):
+        seen.append(value);time.sleep(.005)
+    assert drain_pending(subscription,callback,budget_s=.002)==1
+    assert len(pending)==19

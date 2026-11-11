@@ -27,6 +27,7 @@ from tf2_ros import Buffer, TransformListener, TransformException
 from rclpy.time import Time
 from input_timing import InputTiming, timed_input
 from localization_ingest import drain_pending
+from graph_snapshot import GraphSnapshot
 
 def odom_pose(msg):
     p, q = msg.pose.pose.position, msg.pose.pose.orientation
@@ -163,13 +164,18 @@ class NavigationBridge(Node):
         self.create_service(Trigger, '/go2/mission/invalidate_navigation_goal', self.invalidate_goal)
         self.create_service(Trigger, '/go2/mission/resume_navigation', self.resume)
         self.gate.observe('stop', True, time.monotonic())
+        self.graph_snapshot = GraphSnapshot(self.get_publishers_info_by_topic, self.graph_check_period)
         self.create_timer(self.tick_period, self.tick)
         self.get_logger().info('NAV request adapter mode=' + mode + '; no locomotion/Sport ownership')
+
+    def destroy_node(self):
+        self.graph_snapshot.close()
+        return super().destroy_node()
 
     def mission_observation(self, msg, info):
         now=time.monotonic_ns()
         previous_return = self.mission_health.return_request_ns
-        self.mission_health.graph([x.endpoint_gid for x in self.get_publishers_info_by_topic('/go2/mission/health')],now)
+        self.mission_health.graph([x.endpoint_gid for x in self.graph_snapshot.get('/go2/mission/health')],now)
         # Jazzy's Python MessageInfo has no publisher GID; use unique endpoint,
         # post-discovery monotonic stamp and immutable session as the lease.
         self.mission_health.observe(msg.data, self.mission_health.gid or b'', now, self.session)
@@ -465,22 +471,22 @@ class NavigationBridge(Node):
             self.active_pub.publish(Bool(data=self.active_hint))
             self.gate.planner_active(self.active_hint, now)
         elif self.gate.mode == 'stack':
-            if now - self.last_graph_check >= self.graph_check_period:
-                owners = self.get_publishers_info_by_topic('/go2/navigation/planner_heartbeat')
-                intents = self.get_publishers_info_by_topic('/navigation_active')
-                same_owner = len(owners) == len(intents) == 1 and (owners[0].node_name, owners[0].node_namespace) == (intents[0].node_name, intents[0].node_namespace)
-                gid = bytes(owners[0].endpoint_gid) if same_owner else None
-                if gid != self.active_owner_gid:
-                    self.active_hint = False
-                    self.active_owner_since_ns = time.monotonic_ns()
-                    self.active_session = ''
-                    self.active_observed_ns = 0
-                    self.gate.planner_active(False, now)
-                self.active_owner_gid = gid
-                self.last_graph_check = now
+            # Read and expire the cached graph on every tick.
+            owners = self.graph_snapshot.get('/go2/navigation/planner_heartbeat')
+            intents = self.graph_snapshot.get('/navigation_active')
+            same_owner = len(owners) == len(intents) == 1 and (owners[0].node_name, owners[0].node_namespace) == (intents[0].node_name, intents[0].node_namespace)
+            gid = bytes(owners[0].endpoint_gid) if same_owner else None
+            if gid != self.active_owner_gid:
+                self.active_hint = False
+                self.active_owner_since_ns = time.monotonic_ns()
+                self.active_session = ''
+                self.active_observed_ns = 0
+                self.gate.planner_active(False, now)
+            self.active_owner_gid = gid
+            self.last_graph_check = now
             if self.active_owner_gid is None:
                 self.gate.planner_active(False, now)
-        self.mission_health.graph([x.endpoint_gid for x in self.get_publishers_info_by_topic('/go2/mission/health')], time.monotonic_ns())
+        self.mission_health.graph([x.endpoint_gid for x in self.graph_snapshot.get('/go2/mission/health')], time.monotonic_ns())
         now = time.monotonic()  # graph/TF work must not renew an aged request
         if self.active_hint and self.gate.goal_received:
             self.goals.active()

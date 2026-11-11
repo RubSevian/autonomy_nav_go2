@@ -24,6 +24,7 @@ class ContinuationAdapterTests(unittest.TestCase):
         n=NS(gate=gate,goals=goal,last_tick_started_ns=None,last_tf_check=100.,tf_check_period=1.,
              pairing=NS(selected=None),local_route=False,far_route=True,active_hint=True,
              last_graph_check=100.,graph_check_period=1.,active_owner_gid=b'x',session='nav',
+             graph_snapshot=NS(get=lambda topic: [NS(endpoint_gid=b'x',node_name='far',node_namespace='/')] if topic!='/go2/mission/health' else []),
              active_owner_since_ns=0,active_observed_ns=0,active_session='',
              last_status_publish=100.,status_period=1.,path_recovery=PathRecovery(),path_recovery_state='READY',
              mission_health=NS(graph=lambda *a:None,base_locked=False,return_request_ns=0,valid=lambda *a:True),
