@@ -15,6 +15,7 @@ from geometry_msgs.msg import TwistStamped, PointStamped
 from nav_msgs.msg import Odometry, Path
 from sensor_msgs.msg import Imu, PointCloud2
 from std_msgs.msg import String, Bool, Int8
+from go2_navigation_interfaces.msg import NavigationReadiness
 from std_srvs.srv import Trigger
 from navigation_gate import NavigationGate
 from navigation_recovery import PathRecovery
@@ -143,6 +144,7 @@ class NavigationBridge(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.cmd_pub = self.create_publisher(TwistStamped, '/cmd_vel', 1)
         self.ready_pub = self.create_publisher(String, '/go2/mission/readiness', 1)
+        self.typed_ready_pub = self.create_publisher(NavigationReadiness, '/go2/mission/readiness_typed', 1)
         self.status_pub = self.create_publisher(String, '/go2/navigation/status', 1)
         self.active_pub = self.create_publisher(Bool, '/navigation_active', QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)) if self.local_route else None
         self.create_subscription(TwistStamped, '/navigation/cmd_vel', self.command, 1)
@@ -542,7 +544,10 @@ class NavigationBridge(Node):
             self.mission_health.base_locked = True
             value, enabled = (0.,0.,0.), False
         age = (now - self.gate.request_received + self.gate.request_header_age) if value != (0.,0.,0.) else 0.
-        ready = String(data=json.dumps(dict(observed_ns=time.monotonic_ns(), session_id=self.session, navigation_ready=self.gate.localization_ready(now), perception_ready=self.mission_health.valid(time.monotonic_ns(), self.session), command_enabled=enabled, command=list(value), command_age_s=age)))
+        observed_ns=time.monotonic_ns()
+        envelope=dict(observed_ns=observed_ns, session_id=self.session, navigation_ready=self.gate.localization_ready(now), perception_ready=self.mission_health.valid(observed_ns, self.session), command_enabled=enabled, command=list(value), command_age_s=age)
+        self.typed_ready_pub.publish(NavigationReadiness(**envelope))
+        ready = String(data=json.dumps(envelope))
         self.ready_pub.publish(ready)
         msg = TwistStamped()
         msg.header.frame_id = 'vehicle'

@@ -20,7 +20,7 @@ class ContinuationAdapterTests(unittest.TestCase):
         self.assertTrue(gate.accept((.1,0.,0.),0.,'vehicle',100.))
         goal=GoalTracker(far_mode=True);goal.accept((1,0,0),'map',10,99.)
         goal.state='REPLANNING'
-        out=[];ready=[]
+        out=[];ready=[];typed=[]
         n=NS(gate=gate,goals=goal,last_tick_started_ns=None,last_tf_check=100.,tf_check_period=1.,
              pairing=NS(selected=None),local_route=False,far_route=True,active_hint=True,
              last_graph_check=100.,graph_check_period=1.,active_owner_gid=b'x',session='nav',
@@ -30,6 +30,7 @@ class ContinuationAdapterTests(unittest.TestCase):
              mission_health=NS(graph=lambda *a:None,base_locked=False,return_request_ns=0,valid=lambda *a:True),
              get_publishers_info_by_topic=lambda *a:[],get_clock=lambda:NS(now=lambda:NS(nanoseconds=100_000_000_000)),
              cancel_far_tick=lambda *a:None,cmd_pub=NS(publish=out.append),ready_pub=NS(publish=ready.append),
+             typed_ready_pub=NS(publish=typed.append),typed_messages=typed,legacy_messages=ready,
              command_after_ns=10,goal_tf_valid=True,header_age=lambda msg:0.,header_valid=lambda msg:True,
              far_cancel_pending=False,far_cancel_future=None)
         return n,out,ready
@@ -37,6 +38,11 @@ class ContinuationAdapterTests(unittest.TestCase):
     def tick(self,n):
         with patch('go2_navigation_bridge.time.monotonic',return_value=100.),patch('go2_navigation_bridge.time.monotonic_ns',return_value=100_000_000_000):
             NavigationBridge.tick(n)
+            # Every existing cancellation/pause/recovery scenario must produce
+            # exactly the same authority envelope on both transports.
+            typed=n.typed_messages[-1];legacy=json.loads(n.legacy_messages[-1].data)
+            for key,value in legacy.items():
+                self.assertEqual(list(typed.command) if key=='command' else getattr(typed,key),value)
 
     def test_pause_revokes_cached_velocity_and_path(self):
         n,out,_=self.node();self.tick(n)

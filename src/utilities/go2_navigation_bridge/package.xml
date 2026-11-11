@@ -4,6 +4,7 @@
   <description>Velocity, readiness and cancellation boundary for existing Go2 RL supervisor.</description>
   <maintainer email="ruben.s03@mail.ru">RubSevian</maintainer><license>BSD-3-Clause</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>go2_navigation_interfaces</exec_depend>
   <exec_depend>rclpy</exec_depend><exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>geometry_msgs</exec_depend><exec_depend>nav_msgs</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend><exec_depend>sensor_msgs</exec_depend><exec_depend>std_msgs</exec_depend>
