@@ -112,11 +112,13 @@ def load_profile(path):
         raise ValueError('Sensor relay max age must not exceed bridge sensor timeout')
     dropout = sensors.get('time_sensor_dropout_s', 1.0)
     if (type(dropout) not in (int, float) or not math.isfinite(dropout)
-            or not sensors['time_max_age_s'] <= dropout <= 1.0):
-        raise ValueError('Sensor dropout must be between measurement age limit and 1 second')
+            or not sensors['time_max_age_s'] <= dropout <= 2.0):
+        raise ValueError('Sensor dropout must be between measurement age limit and 2 seconds')
     for key in ('cam_offset_m', 'cloud_pitch_rad', 'imu_pitch_rad', 'imu_yaw_rad', 'imu_tilt_deg'):
         if type(sensors[key]) not in (int, float) or not math.isfinite(sensors[key]):
             raise ValueError('Invalid sensor transform: ' + key)
+    if sensors.get('imu_alignment_mode', 'legacy_bias') not in ('legacy_bias', 'gravity_rotation'):
+        raise ValueError('Unknown IMU alignment mode')
     if sensors['imu_tilt_deg'] != 15.1:
         raise ValueError('IMU tilt must match the existing 15.1 degree calibration routine')
     for key in ('self_filter_min_m', 'self_filter_max_m'):

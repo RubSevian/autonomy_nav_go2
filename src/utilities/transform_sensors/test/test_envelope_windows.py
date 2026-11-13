@@ -21,6 +21,9 @@
 """Window-boundary regressions: pure timestamp fixtures, no ROS transport."""
 
 import unittest
+from dataclasses import replace
+
+from transform_sensors.bounded_time_alignment import BoundedConfig
 
 from test_bounded_alignment import BoundedTimeAlignment
 from test_bounded_alignment import events
@@ -43,6 +46,19 @@ def boundary_rows():
 
 
 class EnvelopeWindowTests(unittest.TestCase):
+    def test_two_second_dropout_keeps_measurement_limits(self):
+        clock = self.undersampled_clock()
+        clock.config = replace(clock.config, sensor_dropout_s=2.0)
+        clock._last_arrival = {'imu': M, 'cloud': M}
+        self.assertTrue(clock.check_health(M + 1_500_000_000))
+        self.assertTrue(clock.check_health(M + 2 * NS))
+        self.assertFalse(clock.check_health(M + 2 * NS + 1))
+        self.assertEqual(clock.dropout_diagnostic['limit_s'], 2.0)
+        self.assertEqual(clock.config.max_age_s, .5)
+        self.assertEqual(clock.config.max_scan_duration_s, .2)
+        with self.assertRaises(ValueError):
+            BoundedConfig(sensor_dropout_s=2.01)
+
     def test_dropout_waits_one_second_without_relaxing_measurement_age(self):
         clock = self.undersampled_clock()
         clock._last_arrival = {'imu': M, 'cloud': M}

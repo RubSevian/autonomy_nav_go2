@@ -24,6 +24,7 @@ import yaml
 from .bounded_time_alignment import BoundedConfig
 from .bounded_time_alignment import BoundedTimeAlignment
 from .bounded_time_alignment import finite_imu_fields
+from .imu_alignment import GravityAlignment
 from .imu_cdr import ImuCdr
 from .point_records import PointRecords
 from .time_alignment import AlignmentConfig
@@ -177,6 +178,15 @@ class Repuber(Node):
         self.ang_bias_z = calib_data['ang_bias_z']
         self.ang_z2x_proj = calib_data['ang_z2x_proj']
         self.ang_z2y_proj = calib_data['ang_z2y_proj']
+        mode = param('imu_alignment_mode', 'legacy_bias')
+        if mode not in ('legacy_bias', 'gravity_rotation'):
+            raise ValueError('imu_alignment_mode must be legacy_bias or gravity_rotation')
+        self.gravity_alignment = GravityAlignment(calib_data) if mode == 'gravity_rotation' else None
+        if self.gravity_alignment is not None:
+            self.get_logger().info(
+                'IMU gravity_rotation: tilt %.2f deg, yaw-spin residual %.2f deg, z bias %.4f m/s^2'
+                % (self.gravity_alignment.tilt_deg, self.gravity_alignment.spin_residual_deg,
+                   self.gravity_alignment.acc_z_bias))
 
         self.body2cloud_trans = TransformStamped()
         self.body2cloud_trans.header.stamp = self.get_clock().now().to_msg()
@@ -379,16 +389,6 @@ class Repuber(Node):
         y2 = y
         z2 = self._imu_sin * x + self._imu_cos * z
 
-        x2 -= self.ang_bias_x
-        y2 -= self.ang_bias_y
-        z2 -= self.ang_bias_z
-
-        x_comp_rate = self.ang_z2x_proj
-        y_comp_rate = self.ang_z2y_proj
-
-        x2 += x_comp_rate * z2
-        y2 += y_comp_rate * z2
-
         acc_x = acceleration[0]
         acc_y = -acceleration[1]
         acc_z = -acceleration[2]
@@ -396,11 +396,20 @@ class Repuber(Node):
         acc_x2 = self._imu_cos * acc_x - self._imu_sin * acc_z
         acc_y2 = acc_y
         acc_z2 = self._imu_sin * acc_x + self._imu_cos * acc_z
-        calibrated_acc = (
-            acc_x2 - self.acc_bias_x,
-            acc_y2 - self.acc_bias_y,
-            acc_z2 - self.acc_bias_z,
-        )
+        if self.gravity_alignment is not None:
+            x2, y2, z2 = self.gravity_alignment.gyro(x2, y2, z2)
+            calibrated_acc = self.gravity_alignment.accel(acc_x2, acc_y2, acc_z2)
+        else:
+            x2 -= self.ang_bias_x
+            y2 -= self.ang_bias_y
+            z2 -= self.ang_bias_z
+            x2 += self.ang_z2x_proj * z2
+            y2 += self.ang_z2y_proj * z2
+            calibrated_acc = (
+                acc_x2 - self.acc_bias_x,
+                acc_y2 - self.acc_bias_y,
+                acc_z2 - self.acc_bias_z,
+            )
         if self.imu_transport_mode == 'projected_cdr' and self.imu_cdr.template is not None:
             self.imu_raw_pub.publish(
                 self.imu_cdr.encode(

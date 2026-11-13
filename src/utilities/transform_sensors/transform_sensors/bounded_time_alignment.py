@@ -69,8 +69,8 @@ class BoundedConfig(AlignmentConfig):
         super().__post_init__()
         if (type(self.sensor_dropout_s) not in (int, float)
                 or not math.isfinite(self.sensor_dropout_s)
-                or not self.max_age_s <= self.sensor_dropout_s <= 1.0):
-            raise ValueError('sensor_dropout_s must be between measurement age limit and 1 second')
+                or not self.max_age_s <= self.sensor_dropout_s <= 2.0):
+            raise ValueError('sensor_dropout_s must be between measurement age limit and 2 seconds')
         for key in (
             'envelope_min_cloud_samples',
             'envelope_min_imu_samples',

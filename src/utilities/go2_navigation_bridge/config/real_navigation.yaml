@@ -79,7 +79,7 @@ sensors:
   time_warmup_s: 2.0  # Стартовое окно оценки сдвига часов без публикации cloud/IMU, с.
   time_margin_s: 0.02  # Запас к минимальному receive−measurement_end, с; не измеренная задержка сети.
   time_max_age_s: 0.5  # Предел возраста начала измерения после mapping, с; stale пакеты отбрасываются.
-  time_sensor_dropout_s: 1.0  # Перерыв поступления допустимых датчиков до DEGRADED; отдельно от возраста измерения.
+  time_sensor_dropout_s: 2.0  # Перерыв поступления допустимых датчиков до DEGRADED; не разрешает устаревшие или слишком длинные сканы.
   time_clock_jump_s: 0.1  # Допустимое расхождение ROS/monotonic приращений, с; больше → FAULT до restart.
   time_max_scan_duration_s: 0.2  # Максимальный относительный time точки в cloud, с.
   time_min_cloud_samples: 5  # Минимум cloud samples до фиксации общего offset.
@@ -105,6 +105,7 @@ sensors:
   imu_pitch_rad: 2.8782025850555555  # Pitch поворота IMU orientation, рад.
   imu_yaw_rad: 3.14159265358  # Yaw поворота IMU orientation, рад.
   imu_tilt_deg: 15.1  # Наклон gyro/accel, град; должен совпадать с калибратором 15.1.
+  imu_alignment_mode: gravity_rotation  # Выравнивание IMU поворотом по измеренной гравитации; legacy_bias — прежнее вычитание горизонтального bias.
   self_filter_min_m: [-0.7, -0.3, -0.6]  # Нижние XYZ границы удаления корпуса, м; Z до вычитания cam_offset.
   self_filter_max_m: [-0.1, 0.3, 0.0]  # Верхние XYZ границы удаления корпуса, м; Z до вычитания cam_offset.
 
