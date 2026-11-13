@@ -119,6 +119,11 @@ def load_profile(path):
             raise ValueError('Invalid sensor transform: ' + key)
     if sensors.get('imu_alignment_mode', 'legacy_bias') not in ('legacy_bias', 'gravity_rotation'):
         raise ValueError('Unknown IMU alignment mode')
+    yaw = sensors.get('imu_yaw_correction_deg', 0.0)
+    if (type(yaw) not in (int, float) or not math.isfinite(yaw) or not -180.0 <= yaw <= 180.0):
+        raise ValueError('Invalid IMU yaw correction')
+    if yaw != 0.0 and sensors.get('imu_alignment_mode', 'legacy_bias') != 'gravity_rotation':
+        raise ValueError('IMU yaw correction requires gravity_rotation mode')
     if sensors['imu_tilt_deg'] != 15.1:
         raise ValueError('IMU tilt must match the existing 15.1 degree calibration routine')
     for key in ('self_filter_min_m', 'self_filter_max_m'):

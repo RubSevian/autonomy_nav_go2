@@ -68,6 +68,12 @@ with tempfile.TemporaryDirectory(prefix='nav-sensor-fixture-') as directory:
         assert all(math.isclose(a,b,rel_tol=1e-6) for a,b in zip(points['time'],(.001,.002)))
         assert [(f.name,f.datatype,f.offset) for f in cloud.fields]==[(f.name,f.datatype,f.offset) for f in fields]
         assert math.isclose(math.sqrt(sum(v*v for v in (imu.linear_acceleration.x,imu.linear_acceleration.y,imu.linear_acceleration.z))),9.81,rel_tol=1e-6)
+        tilt=math.radians(profile['sensors']['imu_tilt_deg'])
+        yaw=math.radians(profile['sensors'].get('imu_yaw_correction_deg',0.))
+        expected=(.1*math.sin(tilt)*math.cos(yaw),
+                  .1*math.sin(tilt)*math.sin(yaw),-.1*math.cos(tilt))
+        for actual,want in zip((imu.angular_velocity.x,imu.angular_velocity.y,imu.angular_velocity.z),expected):
+            assert math.isclose(actual,want,rel_tol=1e-6,abs_tol=1e-8),(actual,want)
         assert (legacy.linear_acceleration.x,legacy.linear_acceleration.y,legacy.linear_acceleration.z)==(0.,0.,0.)
         received['cloud'].clear()
         started=time.monotonic()

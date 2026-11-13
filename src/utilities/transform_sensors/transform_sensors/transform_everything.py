@@ -181,12 +181,18 @@ class Repuber(Node):
         mode = param('imu_alignment_mode', 'legacy_bias')
         if mode not in ('legacy_bias', 'gravity_rotation'):
             raise ValueError('imu_alignment_mode must be legacy_bias or gravity_rotation')
-        self.gravity_alignment = GravityAlignment(calib_data) if mode == 'gravity_rotation' else None
+        yaw_correction = param('imu_yaw_correction_deg', 0.0)
+        if mode == 'legacy_bias' and yaw_correction != 0.0:
+            raise ValueError('IMU yaw correction requires gravity_rotation mode')
+        self.gravity_alignment = (
+            GravityAlignment(calib_data, yaw_correction_deg=yaw_correction)
+            if mode == 'gravity_rotation' else None
+        )
         if self.gravity_alignment is not None:
             self.get_logger().info(
-                'IMU gravity_rotation: tilt %.2f deg, yaw-spin residual %.2f deg, z bias %.4f m/s^2'
+                'IMU gravity_rotation: tilt %.2f deg, yaw-spin residual %.2f deg, z bias %.4f m/s^2, yaw correction %+.2f deg'
                 % (self.gravity_alignment.tilt_deg, self.gravity_alignment.spin_residual_deg,
-                   self.gravity_alignment.acc_z_bias))
+                   self.gravity_alignment.acc_z_bias, self.gravity_alignment.yaw_correction_deg))
 
         self.body2cloud_trans = TransformStamped()
         self.body2cloud_trans.header.stamp = self.get_clock().now().to_msg()

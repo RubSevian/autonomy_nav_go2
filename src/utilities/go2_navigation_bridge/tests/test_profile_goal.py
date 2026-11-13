@@ -82,7 +82,9 @@ class ProfileGoalTest(unittest.TestCase):
         edits=[('time_warmup_s',0.),('time_margin_s',float('nan')),('time_status_period_s',0.),
                ('time_min_cloud_samples',1.5),('time_min_imu_samples',True),
                ('time_max_age_s',profile['bridge']['sensor_timeout_s']+.1),('time_max_scan_duration_s',.5),
-               ('time_status_topic','/utlidar/cloud'),('time_sensor_dropout_s',2.01)]
+               ('time_status_topic','/utlidar/cloud'),('time_sensor_dropout_s',2.01),
+               ('imu_yaw_correction_deg',float('nan')),('imu_yaw_correction_deg',True),
+               ('imu_yaw_correction_deg',181.),('imu_alignment_mode','legacy_bias')]
         for key,value in edits:
             changed=copy.deepcopy(profile);changed['sensors'][key]=value
             with tempfile.NamedTemporaryFile(mode='w',suffix='.yaml') as file:

@@ -34,6 +34,36 @@ def transpose(r):
 
 
 class GravityAlignmentTests(unittest.TestCase):
+    def test_negative_yaw_maps_accel_and_bias_corrected_gyro_to_same_axes(self):
+        calibration = dict(ROBOT, acc_bias_x=0, acc_bias_y=0, acc_bias_z=0)
+        a = GravityAlignment(calibration, yaw_correction_deg=-90)
+        acc = a.accel(1, 0, 9.81)
+        gyro = a.gyro(1 + ROBOT['ang_bias_x'], ROBOT['ang_bias_y'], ROBOT['ang_bias_z'])
+        for actual, expected in zip(acc, (0, -1, 9.81)):
+            self.assertAlmostEqual(actual, expected, places=10)
+        for actual, expected in zip(gyro, (0, -1, 0)):
+            self.assertAlmostEqual(actual, expected, places=10)
+
+    def test_yaw_after_leveling_preserves_gravity_and_vector_lengths(self):
+        base = GravityAlignment(ROBOT)
+        corrected = GravityAlignment(ROBOT, yaw_correction_deg=-57)
+        mean = (ROBOT['acc_bias_x'], ROBOT['acc_bias_y'], ROBOT['acc_bias_z'] + 9.81)
+        for actual, expected in zip(corrected.accel(*mean), (0, 0, 9.81)):
+            self.assertAlmostEqual(actual, expected, places=9)
+        source = (1.2, -2.3, 8.7)
+        x, y, z = base.accel(*source)
+        c, s = math.cos(math.radians(-57)), math.sin(math.radians(-57))
+        expected = (c * x - s * y, s * x + c * y, z)
+        for actual, want in zip(corrected.accel(*source), expected):
+            self.assertAlmostEqual(actual, want, places=10)
+        self.assertAlmostEqual(math.dist(corrected.gyro(*source), (0, 0, 0)),
+                               math.dist(base.gyro(*source), (0, 0, 0)), places=10)
+
+    def test_rejects_invalid_yaw(self):
+        for value in (True, float('nan'), float('inf'), -180.01, 180.01, '57'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                GravityAlignment(ROBOT, yaw_correction_deg=value)
+
     def test_robot_calibration_levels_static_gravity_and_spin_axis(self):
         a = GravityAlignment(ROBOT)
         mean = (ROBOT['acc_bias_x'], ROBOT['acc_bias_y'], ROBOT['acc_bias_z'] + 9.81)

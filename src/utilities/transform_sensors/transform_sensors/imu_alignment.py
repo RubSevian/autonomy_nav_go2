@@ -33,8 +33,13 @@ def _apply(r, v):
 class GravityAlignment:
     """Rotate the tilted IMU frame so measured static gravity is +z."""
 
-    def __init__(self, calibration, max_tilt_deg=30.0):
+    def __init__(self, calibration, max_tilt_deg=30.0, *, yaw_correction_deg=0.0):
         """Derive the rotation and residual biases from the eight-value calibration."""
+        if (type(yaw_correction_deg) not in (int, float)
+                or not math.isfinite(yaw_correction_deg)
+                or not -180.0 <= yaw_correction_deg <= 180.0):
+            raise ValueError('IMU yaw correction must be finite and within [-180, 180] degrees')
+        self.yaw_correction_deg = float(yaw_correction_deg)
         mean = (calibration['acc_bias_x'], calibration['acc_bias_y'],
                 calibration['acc_bias_z'] + GRAVITY)
         norm = math.sqrt(sum(v * v for v in mean))
@@ -45,7 +50,16 @@ class GravityAlignment:
         if self.tilt_deg > max_tilt_deg:
             raise ValueError(
                 'Calibration tilt %.1f deg exceeds %.1f deg' % (self.tilt_deg, max_tilt_deg))
-        self.rotation = _rotation_to_z(up)
+        level = _rotation_to_z(up)
+        # Correction maps leveled IMU vectors into the cloud/body axes.
+        # Apply yaw AFTER leveling; reversing the order changes the gravity axis.
+        yaw = math.radians(self.yaw_correction_deg)
+        c, s = math.cos(yaw), math.sin(yaw)
+        self.rotation = (
+            tuple(c * level[0][j] - s * level[1][j] for j in range(3)),
+            tuple(s * level[0][j] + c * level[1][j] for j in range(3)),
+            level[2],
+        )
         self.gyro_bias = (
             calibration['ang_bias_x'], calibration['ang_bias_y'], calibration['ang_bias_z'])
         self.acc_z_bias = norm - GRAVITY
