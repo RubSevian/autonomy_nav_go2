@@ -17,7 +17,7 @@ class NavigationGate:
         self.command_timeout = command_timeout
         self.sensor_timeout = sensor_timeout
         self.tf_timeout = sensor_timeout if tf_timeout is None else tf_timeout
-        if not math.isfinite(self.tf_timeout) or not 0 < self.tf_timeout <= 1.0:
+        if not math.isfinite(self.tf_timeout) or not 0 < self.tf_timeout <= 2.0:
             raise ValueError("invalid TF timeout")
         self.health = {}
         self.cancelled = False
@@ -70,7 +70,7 @@ class NavigationGate:
 
     def localization_ready(self, now):
         healthy=self.clock_ready(now) and (self.mode == 'command_test' or all(
-            self.fresh(now, self.health.get(name), self.tf_timeout if name=='tf' else self.sensor_timeout)
+            self.fresh(now, self.health.get(name), self.tf_timeout if name in ('tf','odom') else self.sensor_timeout)
             for name in ('lidar', 'imu', 'odom', 'tf')))
         if not healthy:
             if self.recovery:self.recovery.invalidate()

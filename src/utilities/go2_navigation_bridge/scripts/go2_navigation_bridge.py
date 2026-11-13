@@ -424,7 +424,7 @@ class NavigationBridge(Node):
             self.tf_error = "" if valid else (self.pairing.reason or 'pair_expired')
             self.gate.observe('tf', valid, time.monotonic(), tf_age if valid else 0.)
             pair_healthy=(valid and self.gate.clock_ready(now) and all(
-                self.gate.fresh(now,self.gate.health.get(name),self.gate.sensor_timeout) for name in ('lidar','imu','odom')))
+                self.gate.fresh(now,self.gate.health.get(name),self.gate.tf_timeout if name=='odom' else self.gate.sensor_timeout) for name in ('lidar','imu','odom')))
             self.gate.observe_pair(pair.odom.stamp_ns if pair else 0,pair_healthy)
             self.goal_tf_valid = valid
             if not valid:

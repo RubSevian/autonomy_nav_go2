@@ -39,7 +39,7 @@ bridge:
   vy_limit: 0.35  # Финальный clamp NAV по Y, м/с; общий модуль XY ограничен 0.35.
   wz_limit: 0.1  # Финальный clamp NAV yaw, рад/с; максимум контракта R3 0.10.
   command_timeout_s: 0.25  # Максимальный полный возраст команды, с; верхний контракт R3 0.25.
-  sensor_timeout_s: &nav_sensor_timeout_s 1.0  # Общий TTL NAV и корпуса Mission: 1000 мс, согласовано оператором 23.10.2026.
+  sensor_timeout_s: &nav_sensor_timeout_s 1.0  # TTL прочих датчиков/статусов NAV: 1000 мс, согласовано оператором 23.10.2026.
   goal_dwell_s: 0.5  # Подтверждение прибытия; FAR также требует RL_ZERO и устойчивость измеренной позы.
   goal_wait_budget_s: 10.0 # Бюджет эпизода ожидания; восстанавливается только после измеренного продвижения.
   goal_progress_noise_bound_m: 0.0342 # Предварительно: отобранные стабильные RL_ZERO/DISARMED, 08.11 17:41. 0 = нет калибровки. Физическая чувствительность не проверена.
@@ -55,9 +55,9 @@ bridge:
   status_period_s: 0.10 # Уточнение оператора 21.10.2026: 100 мс / 10 Гц; Mission status TTL отдельно 600 мс.
   localization_recovery_samples: 5 # Новые последовательные odometry+TF/time samples.
   path_recovery_timeout_s: 10.0 # Локальный режим: срок восстановления пути. FAR использует goal_wait_budget_s и оставшийся бюджет эпизода.
-  tf_timeout_s: 1.0 # Свежесть TF-пары: 1000 мс, как общий sensor_timeout_s.
+  tf_timeout_s: 2.0 # Свежесть согласованной TF/odom пары: 2 с; затем отказ без дополнительного ожидания.
   tf_check_period_s: 0.02  # Подбор свежей TF/odom пары каждый tick; её возраст ограничен отдельным tf_timeout_s.
-  tf_pair_history_s: 1.0  # Временной горизонт odometry/TF, с; не меньше sensor_timeout_s; НЕ продлевает свежесть.
+  tf_pair_history_s: 2.0  # Временной горизонт odometry/TF, с; не меньше sensor_timeout_s; НЕ продлевает свежесть.
   tf_pair_max_samples: 2048  # Предел компактных pose-записей НА КАЖДЫЙ поток, включая версии с одинаковым stamp.
   odometry_subscription_depth: 512  # DDS-очередь до callback; сохраняет пачки Point-LIO для согласования с TF.
   tf_pair_position_tolerance_m: 0.001  # Допуск max(|dx|,|dy|,|dz|) одной оценки odometry/TF, м; не точность стояния робота.

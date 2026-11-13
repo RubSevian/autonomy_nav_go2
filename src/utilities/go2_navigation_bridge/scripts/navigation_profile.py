@@ -56,8 +56,8 @@ def load_profile(path):
     if type(recovery_timeout) not in (int,float) or not math.isfinite(recovery_timeout) or recovery_timeout!=10.:
         raise ValueError('Path recovery timeout must be 10 seconds')
     tf_timeout=bridge.get('tf_timeout_s',bridge['sensor_timeout_s'])
-    if type(tf_timeout) not in (int,float) or not math.isfinite(tf_timeout) or not 0<tf_timeout<=1.:
-        raise ValueError('Invalid tf_timeout_s (maximum 1 second)')
+    if type(tf_timeout) not in (int,float) or not math.isfinite(tf_timeout) or not 0<tf_timeout<=2.:
+        raise ValueError('Invalid tf_timeout_s (maximum 2 seconds)')
     if bridge['tf_pair_history_s'] < tf_timeout:
         raise ValueError('TF pair history must cover tf_timeout_s')
     if bridge['tf_pair_history_s'] < bridge['sensor_timeout_s']:

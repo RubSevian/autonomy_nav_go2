@@ -64,7 +64,7 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
     assert len([x for x in captured if x['package']=='point_lio_unilidar'])==1
     # Edits to ONE profile reach every consumer, without installed FAR/Point-LIO config files.
     changed=yaml.safe_load((p.parents[1]/'config/real_navigation.yaml').read_text())
-    changed['bridge']['tf_pair_history_s']=1.5
+    changed['bridge']['tf_pair_history_s']=2.5
     changed['bridge']['tf_pair_max_samples']=3072
     changed['bridge']['tf_pair_position_tolerance_m']=.002
     changed['bridge']['tf_pair_quaternion_tolerance']=.003
@@ -86,7 +86,7 @@ with tempfile.NamedTemporaryFile(suffix='.yaml') as f:
         bridge=next(node for node in captured if node['package']=='go2_navigation_bridge')['parameters'][0]
         assert bridge['goal_tolerance_m']==.30 and bridge['imu_topic']=='/audit/imu'
         assert bridge['goal_acceptable_m']==.35
-        assert bridge['tf_pair_history_s']==1.5 and bridge['tf_pair_max_samples']==3072
+        assert bridge['tf_pair_history_s']==2.5 and bridge['tf_pair_max_samples']==3072
         assert type(bridge['tf_pair_max_samples']) is int
         assert bridge['tf_pair_position_tolerance_m']==.002 and bridge['tf_pair_quaternion_tolerance']==.003
         assert by_name['laserMapping']['parameters'][0]['common.lid_topic']=='/audit/cloud'

@@ -19,11 +19,26 @@ class GateTest(unittest.TestCase):
         g.observe('tf',True,10.)
         self.assertTrue(g.localization_ready(10.999))
         self.assertFalse(g.localization_ready(11.001))
-        for key in ('lidar','imu','odom'):
+        for key in ('lidar','imu'):
             g=NavigationGate('stack',tf_timeout=1.)
             for name in ('lidar','imu','odom','tf'):g.observe(name,True,10.9)
             g.observe(key,True,10.)
             self.assertFalse(g.localization_ready(10.9))
+
+    def test_tf_odom_two_seconds_then_immediate_failure(self):
+        g=NavigationGate('stack',sensor_timeout=1.,tf_timeout=2.)
+        for key in ('odom','tf'):g.observe(key,True,100.)
+        for key in ('lidar','imu'):g.observe(key,True,101.9)
+        g.goal()
+        self.assertTrue(g.localization_ready(101.999))
+        self.assertTrue(g.localization_ready(102.))
+        self.assertFalse(g.localization_ready(102.001))
+        self.assertTrue(g.goal_invalidated)
+        self.assertFalse(g.goal_received)
+        self.assertEqual(g.output(102.001),ZERO)
+        for key in ('odom','tf'):g.observe(key,True,102.1)
+        self.assertTrue(g.localization_ready(102.1))
+        self.assertFalse(g.goal_received)
 
     def test_directions_and_clamp(self):
         for axis in range(3):
