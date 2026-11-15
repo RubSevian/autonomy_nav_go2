@@ -10,6 +10,9 @@ from geometry_msgs.msg import TransformStamped
 from rclpy.time import Time
 from go2_navigation_bridge import LocalizationBuffer, NavigationBridge
 from localization_pairing import LocalizationPairing, PairingConfig, PoseSample
+from navigation_gate import NavigationGate
+from nav_msgs.msg import Odometry
+from contextlib import nullcontext
 
 
 def transform(pose):
@@ -23,6 +26,27 @@ def transform(pose):
 
 
 class BufferTest(unittest.TestCase):
+    def test_odometry_admission_uses_two_second_tf_deadline(self):
+        # Real callback without a Node, DDS or outputs. A 1.0005 s packet in
+        # the physical capture cleared all pairs under the old 1 s sensor gate.
+        for age,accepted in ((1.000510848,True),(1.99,True),(2.,True),(2.001,False),(-.01,False)):
+            with self.subTest(age=age):
+                now=10_000_000_000;stamp=now-round(age*1e9)
+                state=SimpleNamespace(gate=NavigationGate(sensor_timeout=1.,tf_timeout=2.),
+                    pairing=LocalizationPairing(PairingConfig(max_age_s=2.,history_s=2.)),
+                    get_clock=lambda:SimpleNamespace(now=lambda:SimpleNamespace(nanoseconds=now)),
+                    input_timing=SimpleNamespace(callback=lambda *args:nullcontext()))
+                state.header_age=lambda msg:NavigationBridge.header_age(state,msg)
+                state.header_valid=lambda msg,*args:NavigationBridge.header_valid(state,msg,*args)
+                msg=Odometry();msg.header.stamp=Time(nanoseconds=stamp).to_msg()
+                msg.header.frame_id='camera_init';msg.child_frame_id='aft_mapped';msg.pose.pose.orientation.w=1.
+                NavigationBridge.odom(state,msg)
+                self.assertEqual(state.pairing.odom.count,1 if accepted else 0)
+                if accepted:self.assertEqual(state.pairing.odom.stamps,[stamp])
+                # General sensor admission is still 1 s, with no timestamp edit.
+                self.assertEqual(NavigationBridge.header_valid(state,msg),0<=age<=1.)
+                self.assertEqual(msg.header.stamp.sec*10**9+msg.header.stamp.nanosec,stamp)
+
     def setup_pairing(self):
         pairing = LocalizationPairing(PairingConfig())
         buffer = LocalizationBuffer(pairing)

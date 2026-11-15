@@ -209,9 +209,10 @@ class NavigationBridge(Node):
         except (ValueError, TypeError, KeyError):
             self.gate.observe_alignment('INVALID', False, now / 1e9)
 
-    def header_valid(self, msg):
+    def header_valid(self, msg, max_age_s=None):
         age = self.header_age(msg)
-        return bool(msg.header.frame_id) and math.isfinite(age) and 0 <= age <= self.gate.sensor_timeout
+        limit = self.gate.sensor_timeout if max_age_s is None else max_age_s
+        return bool(msg.header.frame_id) and math.isfinite(age) and 0 <= age <= limit
 
     def command(self, msg):
         if self.gate.mode == 'stack' and msg.header.stamp.sec*1000000000+msg.header.stamp.nanosec <= max(self.goals.stamp_ns,self.command_after_ns):
@@ -227,7 +228,9 @@ class NavigationBridge(Node):
     @timed_input('odom')
     def odom(self, msg):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
-        valid = self.header_valid(msg) and msg.header.frame_id in ('map','camera_init') and msg.child_frame_id == 'aft_mapped' and all(math.isfinite(x) for x in (p.x,p.y,p.z,q.x,q.y,q.z,q.w)) and .5 < sum(x*x for x in (q.x,q.y,q.z,q.w)) < 1.5
+        # Odometry shares the TF pair deadline; the general sensor deadline
+        # would clear a still-fresh 2 s pair on a delayed 1 s odometry packet.
+        valid = self.header_valid(msg,self.gate.tf_timeout) and msg.header.frame_id in ('map','camera_init') and msg.child_frame_id == 'aft_mapped' and all(math.isfinite(x) for x in (p.x,p.y,p.z,q.x,q.y,q.z,q.w)) and .5 < sum(x*x for x in (q.x,q.y,q.z,q.w)) < 1.5
         self.last_odom_frame = msg.header.frame_id
         if valid:
             self.pairing.observe_odom(odom_pose(msg))
