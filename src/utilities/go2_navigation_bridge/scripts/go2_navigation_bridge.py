@@ -128,7 +128,7 @@ class NavigationBridge(Node):
             position_tolerance_m=param('tf_pair_position_tolerance_m', .001),
             quaternion_tolerance=param('tf_pair_quaternion_tolerance', .001)))
         self.session = uuid.uuid4().hex
-        self.mission_health = MissionHealth(param('mission_health_timeout_s', .25))
+        self.mission_health = MissionHealth(param('mission_health_timeout_s', .5))
         self.create_subscription(String, '/go2/mission/health', self.mission_observation, 1)
         self.active_hint = False
         self.local_enabled = False

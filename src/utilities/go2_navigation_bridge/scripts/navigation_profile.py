@@ -29,6 +29,9 @@ def load_profile(path):
             if 'offset' not in name and value <= 0:
                 raise ValueError(f'{section}.{name} must be positive')
     b=data['bridge']
+    mission_ttl=b.get('mission_health_timeout_s',.5)
+    if type(mission_ttl) not in (int,float) or not math.isfinite(mission_ttl) or not 0<mission_ttl<=.5:
+        raise ValueError('Invalid mission_health_timeout_s (maximum 0.5 s)')
     bound=b.get('goal_progress_noise_bound_m')
     if type(bound) not in (int,float) or not math.isfinite(bound) or bound<0:
         raise ValueError('Invalid progress noise bound')

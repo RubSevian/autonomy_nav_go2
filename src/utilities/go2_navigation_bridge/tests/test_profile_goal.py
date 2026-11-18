@@ -10,6 +10,29 @@ from navigation_goal import GoalTracker
 from navigation_gate import NavigationGate
 
 class ProfileGoalTest(unittest.TestCase):
+    def test_mission_lease_500ms_is_independent_of_command_and_tf(self):
+        import json
+        from mission_health import MissionHealth
+        profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
+        b=profile['bridge']
+        self.assertEqual(b['mission_health_timeout_s'],.5)
+        self.assertEqual(b['tf_timeout_s'],2.)
+        self.assertLessEqual(b['command_timeout_s'],.25)
+        health=MissionHealth(b['mission_health_timeout_s']);health.graph([b'a'],1)
+        message=dict(observed_ns=1_000_000_000,session_id='m',navigation_session_id='n',ready=True,physical=True)
+        health.observe(json.dumps(message),b'a',1_000_000_001,'n')
+        self.assertTrue(health.valid(1_300_000_000,'n'))
+        self.assertTrue(health.valid(1_500_000_000,'n'))
+        self.assertFalse(health.valid(1_501_000_000,'n'))
+        # Duplicate handling is deliberately unchanged by this lease correction.
+        health.observe(json.dumps(message),b'a',1_020_000_000,'n')
+        self.assertFalse(health.valid(1_020_000_000,'n'))
+        for value in (True,0.,.501,float('nan')):
+            invalid=copy.deepcopy(profile);invalid['bridge']['mission_health_timeout_s']=value
+            with tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/'nav.yaml';path.write_text(yaml.safe_dump(invalid))
+                with self.assertRaisesRegex(ValueError,'mission_health_timeout_s'):load_profile(path)
+
     def test_profile_speed_is_accepted_by_runtime_gate(self):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
         limits=tuple(profile['bridge'][k] for k in ('vx_limit','vy_limit','wz_limit'))
