@@ -57,6 +57,12 @@ def main():
                     result=json.loads((capture/'base_motion_results.json').read_text())
                     assert info['own_publishers']==[] and info['own_clients']==[],info
                     assert info['velocity_samples']>100 and info['until_shutdown'],info
+                    assert info['file_flush_period_s']==1.,info
+                    # Buffered CSV still includes every delivered sample at SIGINT.
+                    import csv
+                    for filename,expected in [('odometry.csv',info['poses']),('velocity.csv',info['velocity_samples'])]:
+                        with (capture/filename).open() as stream:
+                            assert sum(1 for _ in csv.DictReader(stream))==expected,filename
                     assert result['velocity_status']=='EKF_RECORDED',result
                     window=result['manipulation_windows'][0]
                     assert window['metrics']['status']=='RELATIVE_ODOMETRY_ONLY',window

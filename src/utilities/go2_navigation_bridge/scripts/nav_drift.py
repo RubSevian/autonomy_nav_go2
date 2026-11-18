@@ -28,6 +28,7 @@ def main():
  (out/'navigation_profile.yaml').write_text(yaml.safe_dump(profile,sort_keys=False,allow_unicode=True))
  (out/'recording_config.yaml').write_text(yaml.safe_dump(config,sort_keys=False))
  import rclpy
+ from rclpy.executors import SingleThreadedExecutor
  from rclpy.node import Node
  from rclpy.parameter import Parameter
  from rclpy.qos import qos_profile_sensor_data,QoSProfile,DurabilityPolicy
@@ -40,13 +41,16 @@ def main():
  rclpy.init(args=ros_args,signal_handler_options=SignalHandlerOptions.NO)
  n=Node('manual_drift_recorder',namespace='/diagnostics',enable_rosout=False,start_parameter_services=False,parameter_overrides=[Parameter('start_type_description_service',value=False)])
  n.destroy_publisher(n._parameter_event_publisher);n._parameter_event_publisher=None
+ # Keep the node attached. rclpy.spin_once(node) adds/removes it on every
+ # message, rebuilding the executor wait set at sensor rates.
+ executor=SingleThreadedExecutor(context=n.context);executor.add_node(n)
  rows=[];events=[];streams={};phase='unmarked';stop=False;stop_reason='duration_elapsed';capture_error=None;statusfile=(out/'status.jsonl').open('w')
  resourcefile=(out/'resources.jsonl').open('w',buffering=1);sampler=LaunchResourceSampler();next_resource_sample=time.monotonic()
- velocityfile=(out/'velocity.csv').open('w',buffering=1)
+ velocityfile=(out/'velocity.csv').open('w',buffering=65536)
  velocitywriter=csv.writer(velocityfile)
  velocitywriter.writerow(['receipt_mono_ns','receipt_ros_ns','clock_pair_span_ns','header_ns','frame',
                           'vx','vy','vz','wx','wy','wz',*[f'cov_{i}' for i in range(36)]])
- odometryfile=(out/'odometry.csv').open('w',buffering=1)
+ odometryfile=(out/'odometry.csv').open('w',buffering=65536)
  odometrywriter=csv.writer(odometryfile)
  odometrywriter.writerow(['receipt_mono_ns','header_ns','phase','frame','child','x','y','z','qx','qy','qz','qw','yaw','finite','dds_source_ns','dds_received_ns','receipt_ros_ns','clock_pair_span_ns'])
  velocity_count=0
@@ -123,11 +127,15 @@ def main():
  print(f'Recording: {out}; duration={"until shutdown/capacity" if a.until_shutdown else str(a.seconds)+"s"}; interactive_marks={config["interactive_marks"]}',flush=True)
  if config['interactive_marks']:print('Optional marks: 1=start stationary, 2=moving, 3=return stationary, q=finish.',flush=True)
  begin=time.monotonic()
+ next_flush=begin+1.
  try:
   while not stop and (a.until_shutdown or time.monotonic()-begin<a.seconds):
-   rclpy.spin_once(n,timeout_sec=config['spin_timeout_s'])
+   executor.spin_once(timeout_sec=config['spin_timeout_s'])
    thermal_mono,thermal_ros,_=clocks();temperatures.sample(thermal_mono,thermal_ros)
    statuses.flush(thermal_mono)
+   if time.monotonic()>=next_flush:
+    odometryfile.flush();velocityfile.flush();statusfile.flush()
+    next_flush=time.monotonic()+1.
    if time.monotonic()>=next_resource_sample:
     try:resourcefile.write(json.dumps(sampler.sample())+'\n')
     except Exception as error:events.append({'mono_ns':time.monotonic_ns(),'resource_sample_error':type(error).__name__+': '+str(error)})
@@ -147,9 +155,9 @@ def main():
   statuses.flush(time.monotonic_ns(),force=True)
   odometryfile.close()
   atomic(out/'marks.json',events);atomic(out/'streams.json',streams)
-  atomic(out/'capture.json',{'duration_s':time.monotonic()-begin,'planned_duration_s':None if a.until_shutdown else a.seconds,'until_shutdown':a.until_shutdown,'poses':len(rows),'velocity_samples':velocity_count,'temperature_samples':temperatures.samples,'temperature_period_s':1.0,'status_recording':statuses.summary(),'capacity':config['pose_capacity'],'complete':capture_error is None and len(rows)<config['pose_capacity'] and velocity_count<config['pose_capacity'],'stop_reason':stop_reason,'error':capture_error,'recording_config':config,'config_path':str(a.config.resolve()),'own_publishers':[],'own_clients':[],'queue_drops':'NOT_OBSERVABLE','ground_truth':False})
+  atomic(out/'capture.json',{'duration_s':time.monotonic()-begin,'planned_duration_s':None if a.until_shutdown else a.seconds,'until_shutdown':a.until_shutdown,'poses':len(rows),'velocity_samples':velocity_count,'temperature_samples':temperatures.samples,'temperature_period_s':1.0,'file_flush_period_s':1.0,'status_recording':statuses.summary(),'capacity':config['pose_capacity'],'complete':capture_error is None and len(rows)<config['pose_capacity'] and velocity_count<config['pose_capacity'],'stop_reason':stop_reason,'error':capture_error,'recording_config':config,'config_path':str(a.config.resolve()),'own_publishers':[],'own_clients':[],'queue_drops':'NOT_OBSERVABLE','ground_truth':False})
   temperatures.close();velocityfile.close();statusfile.close();resourcefile.close()
-  def close_ros():n.destroy_node();rclpy.try_shutdown()
+  def close_ros():executor.shutdown();n.destroy_node();rclpy.try_shutdown()
   clean_shutdown=close_with_timeout(close_ros)
   atomic(out/'shutdown.json',dict(dds_cleanup_complete=clean_shutdown,cleanup_timeout_s=5.,files_closed=True))
  if config['analyze_on_finish']:
