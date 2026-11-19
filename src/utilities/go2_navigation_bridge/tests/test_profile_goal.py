@@ -36,8 +36,19 @@ class ProfileGoalTest(unittest.TestCase):
     def test_profile_speed_is_accepted_by_runtime_gate(self):
         profile=load_profile(Path(__file__).resolve().parents[1]/'config/real_navigation.yaml')
         limits=tuple(profile['bridge'][k] for k in ('vx_limit','vy_limit','wz_limit'))
-        self.assertEqual(NavigationGate(limits=limits).limits,(.35,.35,.1))
-        for invalid in ((.351,.1,.1),(.35,.351,.1),(.35,.1,.101)):
+        self.assertEqual(NavigationGate(limits=limits).limits,(.35,.35,.35))
+        import math
+        self.assertAlmostEqual(math.radians(component_parameters(profile)['pathFollower']['maxYawRate']),.35)
+        for sign in (-1,1):
+            gate=NavigationGate('command_test',limits=limits)
+            gate.locomotion(True,10.);gate.goal();gate.planner_active(True,10.)
+            for name in ('path','stop'):gate.observe(name,True,10.)
+            self.assertTrue(gate.accept((0.,0.,sign*.35),0.,'vehicle',10.))
+            self.assertEqual(gate.output(10.),(0.,0.,sign*.35))
+            self.assertTrue(gate.accept((0.,0.,sign*.9),0.,'vehicle',10.))
+            self.assertAlmostEqual(gate.output(10.)[2],sign*.35)
+            self.assertEqual(gate.output(10.251),(0.,0.,0.))
+        for invalid in ((.351,.1,.1),(.35,.351,.1),(.35,.1,.351)):
             with self.assertRaises(ValueError):NavigationGate(limits=invalid)
 
     def test_nominal_profile(self):
@@ -136,7 +147,7 @@ class ProfileGoalTest(unittest.TestCase):
         profile['robot']['sensor_offset_x_m']=.31
         profile['local']['goal_tolerance_m']=.3
         nodes=component_parameters(profile)
-        self.assertAlmostEqual(nodes['pathFollower']['maxYawRate'],5.7295779513)
+        self.assertAlmostEqual(nodes['pathFollower']['maxYawRate'],20.0535228296)
         self.assertEqual(nodes['localPlanner']['sensorOffsetX'],.31)
         self.assertEqual(nodes['pathFollower']['speedDeadband'],.02)
         self.assertEqual(nodes['far_planner']['sensor_offset_x'],.31)

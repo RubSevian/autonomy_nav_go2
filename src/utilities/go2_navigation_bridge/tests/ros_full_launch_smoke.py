@@ -50,8 +50,8 @@ with tempfile.TemporaryDirectory(prefix='nav-calibration-fixture-') as directory
             assert future.done() and future.result() is not None
             values=future.result().values;node.destroy_client(client);return values
         follower=parameters('pathFollower',['sendSportCommand','maxYawRate','followerMotionModel','stopDisThre'])
-        assert not follower[0].bool_value and abs(follower[1].double_value-5.729577951)<1e-6
-        assert follower[2].string_value=='holonomic' and abs(follower[3].double_value-.225)<1e-6
+        assert not follower[0].bool_value and abs(follower[1].double_value-math.degrees(profile['local']['max_yaw_rate_rps']))<1e-6
+        assert follower[2].string_value=='holonomic' and abs(follower[3].double_value-profile['local']['stop_distance_m'])<1e-6
         geometry=parameters('localPlanner',['vehicleLength','vehicleWidth','minPathScale'])
         assert [v.double_value for v in geometry]==[.62,.4,.75]
         far=parameters('far_planner',['sensor_offset_x','vehicle_height'])

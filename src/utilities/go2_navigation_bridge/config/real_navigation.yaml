@@ -20,7 +20,7 @@ local:
   search_radius_m: 0.55  # Радиус collision library до умножения на path_scale, м.
   path_scale: 0.75  # Масштаб готовой библиотеки путей; текущий набор требует 0.75.
   max_speed_mps: 0.35  # Максимальная поступательная скорость follower и autonomySpeed local nodes, м/с.
-  max_yaw_rate_rps: 0.1  # Максимальный yaw follower, рад/с; launch переводит в град/с.
+  max_yaw_rate_rps: 0.35  # Максимальный yaw follower, рад/с; launch переводит в град/с.
   max_accel_mps2: 0.2  # Ограничение изменения поступательной скорости follower, м/с².
   goal_tolerance_m: 0.10  # Желаемая точность подхода FAR/bridge, м.
   goal_acceptable_m: 0.25  # Допустимый итог только после исчерпания продолжения.
@@ -38,7 +38,7 @@ bridge:
   mission_health_timeout_s: 0.5  # Свежесть координатора; общий контракт с владельцем руки, отдельно от TF.
   vx_limit: 0.35 # Финальный clamp NAV по X, м/с; отдельный контракт R3 NAV 0.35.
   vy_limit: 0.35  # Финальный clamp NAV по Y, м/с; общий модуль XY ограничен 0.35.
-  wz_limit: 0.1  # Финальный clamp NAV yaw, рад/с; максимум контракта R3 0.10.
+  wz_limit: 0.35  # Лимит NAV yaw, рад/с; согласован с R3 19.11.2026.
   command_timeout_s: 0.25  # Максимальный полный возраст команды, с; верхний контракт R3 0.25.
   sensor_timeout_s: &nav_sensor_timeout_s 1.0  # TTL прочих датчиков/статусов NAV: 1000 мс, согласовано оператором 23.10.2026.
   goal_dwell_s: 0.5  # Подтверждение прибытия; FAR также требует RL_ZERO и устойчивость измеренной позы.
